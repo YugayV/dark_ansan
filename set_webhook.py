@@ -3,7 +3,7 @@ import requests
 import os
 
 BOT_TOKEN = os.getenv('BOT_TOKEN')
-RAILWAY_URL = "https://ваш-проект.up.railway.app"  # Замените на ваш URL
+RAILWAY_URL = "https://web-production-540b7.up.railway.app"  # Замените на ваш URL
 
 response = requests.post(
     f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook",
