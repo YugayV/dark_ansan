@@ -333,8 +333,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ],
                 [
                     InlineKeyboardButton("🍽️ Меню", callback_data="menu_categories"),
-                    InlineKeyboardButton("🏠 Главное", callback_data="main_menu"), 
-                    InlineKeyboardButton("🛒 В корзину", callback_data="view_cart")
+                    InlineKeyboardButton("🏠 Главное", callback_data="main_menu")
                 ]
             ]
             
