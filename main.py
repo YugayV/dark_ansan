@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 DARK KITCHEN ANSAN - Telegram Bot
-Версия 1.3 - Исправлены ошибки отправки скриншотов и корзины
+Версия 1.4 - Исправлена отправка скриншотов в группу
 """
 
 import os
@@ -29,6 +29,11 @@ load_dotenv()
 
 BOT_TOKEN = "8447150166:AAEqWqBJOBYK5pgVp7euAx-7q3mF5iOz6Ko" 
 GROUP_ID = os.getenv('GROUP_ID', '-5045934907')  # ID группы администраторов
+
+# Проверяем GROUP_ID
+if not GROUP_ID or GROUP_ID == '-5045934907':
+    print("⚠️ ВНИМАНИЕ: GROUP_ID не установлен или имеет значение по умолчанию!")
+    print("💡 Создайте файл .env и добавьте: GROUP_ID='-ваш_ид_группы'")
 
 # Время работы
 WORK_TIME = "с 22:00 по 10:00 утра"
@@ -730,14 +735,24 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 ⏰ Время: {datetime.now().strftime('%H:%M:%S %d.%m.%Y')}
 👤 User ID: {user_id}"""
         
-        # Проверяем GROUP_ID
-        if not GROUP_ID or GROUP_ID == '-5083395375':
-            logger.error("GROUP_ID не установлен или имеет значение по умолчанию!")
-            raise ValueError("GROUP_ID не установлен")
+        # ОТЛАДКА: Проверяем данные
+        logger.info(f"Отправка скриншота в группу ID: {GROUP_ID}")
+        logger.info(f"Тип GROUP_ID: {type(GROUP_ID)}")
+        logger.info(f"Значение GROUP_ID: {GROUP_ID}")
         
-        # Отправляем фото в группу
+        # Преобразуем GROUP_ID в int если это число, оставляем строкой если это строковый ID
+        try:
+            group_id_int = int(GROUP_ID)
+            chat_id = group_id_int
+        except ValueError:
+            # Если это строковый ID (например, '@groupname')
+            chat_id = GROUP_ID
+        
+        logger.info(f"Используемый chat_id: {chat_id}")
+        
+        # Пытаемся отправить фото
         await context.bot.send_photo(
-            chat_id=int(GROUP_ID),  # Преобразуем в int
+            chat_id=chat_id,
             photo=photo.file_id,
             caption=caption,
             reply_markup=get_admin_order_keyboard(last_order_id),
@@ -747,14 +762,39 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Обновляем статус заказа
         db.mark_screenshot_sent(last_order_id)
         
-        logger.info(f"✅ Скриншот заказа {last_order_id} успешно отправлен админу")
+        logger.info(f"✅ Скриншот заказа {last_order_id} успешно отправлен админу в группу {GROUP_ID}")
+        
+        # Также отправляем текстовое сообщение с информацией о заказе
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"📸 <b>СКРИНШОТ ОПЛАТЫ ДОСТАВЛЕН В ГРУППУ</b>\n\n"
+                 f"🆔 ID заказа: {last_order_id}\n"
+                 f"👤 Клиент: {order['username']}\n"
+                 f"📞 Телефон: {order['phone']}\n"
+                 f"💰 Сумма: {order['final_total']}{CURRENCY}\n"
+                 f"⏰ Время: {datetime.now().strftime('%H:%M:%S %d.%m.%Y')}",
+            parse_mode='HTML'
+        )
         
     except Exception as e:
         logger.error(f"❌ Ошибка отправки скриншота админу: {e}")
         
-        # Отправляем заказ текстом, если не удалось отправить фото
+        # Сохраняем информацию о скриншоте в файл
+        error_msg = f"""❌ ОШИБКА ОТПРАВКИ СКРИНШОТА
+Время: {datetime.now().strftime('%H:%M:%S %d.%m.%Y')}
+Группа: {GROUP_ID}
+Заказ: {last_order_id}
+Пользователь: {order['username']}
+Телефон: {order['phone']}
+Сумма: {order['final_total']}{CURRENCY}
+Ошибка: {str(e)}"""
+        
+        with open('screenshot_errors.log', 'a', encoding='utf-8') as f:
+            f.write(f"\n{error_msg}\n")
+        
+        # Пытаемся отправить хотя бы текстовое сообщение
         try:
-            error_text = f"""📸 <b>СКРИНШОТ ОПЛАТЫ ПОЛУЧЕН (ОШИБКА ОТПРАВКИ ФОТО)</b>
+            text_msg = f"""⚠️ <b>СКРИНШОТ ОПЛАТЫ ПОЛУЧЕН (ОШИБКА ОТПРАВКИ ФОТО)</b>
 
 🆔 ID заказа: {last_order_id}
 👤 Клиент: {order['username']}
@@ -763,17 +803,17 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 ⏰ Время: {datetime.now().strftime('%H:%M:%S %d.%m.%Y')}
 👤 User ID: {user_id}
 
-⚠️ <i>Пользователь отправил скриншот, но произошла ошибка при отправке фото. Пожалуйста, запросите скриншот у пользователя.</i>"""
+⚠️ <i>Пользователь отправил скриншот оплаты, но произошла ошибка при отправке фото. Пожалуйста, запросите скриншот у пользователя.</i>"""
             
             await context.bot.send_message(
-                chat_id=int(GROUP_ID),
-                text=error_text,
+                chat_id=GROUP_ID,
+                text=text_msg,
                 reply_markup=get_admin_order_keyboard(last_order_id),
                 parse_mode='HTML'
             )
             
             db.mark_screenshot_sent(last_order_id)
-            logger.info(f"✅ Информация о скриншоте заказа {last_order_id} отправлена админу текстом")
+            logger.info(f"✅ Текстовое уведомление о скриншоте заказа {last_order_id} отправлено админу")
             
         except Exception as e2:
             logger.error(f"❌ Ошибка отправки текстового уведомления: {e2}")
@@ -935,16 +975,24 @@ async def send_order_to_admin(context: ContextTypes.DEFAULT_TYPE, order_id: str,
         admin_text += f"\n⏰ Время: {datetime.now().strftime('%H:%M:%S %d.%m.%Y')}"
         admin_text += f"\n👤 User ID: {order['user_id']}"
         
-        # Проверяем GROUP_ID
-        if not GROUP_ID or GROUP_ID == '-5083395375':
-            logger.error("GROUP_ID не установлен или имеет значение по умолчанию!")
-            # Сохраняем в лог
-            with open('orders.log', 'a', encoding='utf-8') as f:
-                f.write(f"\n\n{admin_text}\n")
-            return
+        # Проверяем и преобразуем GROUP_ID
+        try:
+            if isinstance(GROUP_ID, str):
+                # Пробуем преобразовать в int, если это число
+                if GROUP_ID.lstrip('-').isdigit():
+                    chat_id = int(GROUP_ID)
+                else:
+                    # Если это строковый ID (например, '@groupname')
+                    chat_id = GROUP_ID
+            else:
+                chat_id = GROUP_ID
+        except:
+            chat_id = GROUP_ID
+        
+        logger.info(f"Отправка заказа {order_id} в чат: {chat_id}")
         
         await context.bot.send_message(
-            chat_id=int(GROUP_ID),
+            chat_id=chat_id,
             text=admin_text,
             reply_markup=get_admin_order_keyboard(order_id),
             parse_mode='HTML'
@@ -952,18 +1000,32 @@ async def send_order_to_admin(context: ContextTypes.DEFAULT_TYPE, order_id: str,
         
         logger.info(f"✅ Заказ {order_id} отправлен админу")
         
+        # Также записываем в лог файл на всякий случай
+        with open('orders.log', 'a', encoding='utf-8') as f:
+            f.write(f"\n{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Заказ {order_id}\n{admin_text}\n")
+        
     except Exception as e:
         logger.error(f"❌ Ошибка отправки админу: {e}")
+        logger.error(f"GROUP_ID: {GROUP_ID}, тип: {type(GROUP_ID)}")
         
-        # Сохраняем в лог
-        with open('orders.log', 'a', encoding='utf-8') as f:
-            f.write(f"\n\n{admin_text}\n")
+        # Сохраняем в лог файл
+        with open('failed_orders.log', 'a', encoding='utf-8') as f:
+            f.write(f"\n{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Ошибка отправки заказа {order_id}\n")
+            f.write(f"Ошибка: {str(e)}\n")
+            f.write(f"GROUP_ID: {GROUP_ID}\n")
 
 async def handle_admin_action(query, data, context):
     """Обработка действий администратора"""
     # Проверяем, что сообщение из группы администраторов
-    if str(query.message.chat.id) != str(GROUP_ID).replace('-', '').lstrip('-'):
-        await query.answer("Эта команда доступна только администраторам", show_alert=True)
+    try:
+        current_chat_id = str(query.message.chat.id)
+        group_id_str = str(GROUP_ID).replace('-', '').lstrip('-')
+        
+        if current_chat_id != group_id_str:
+            await query.answer("Эта команда доступна только администраторам", show_alert=True)
+            return
+    except:
+        await query.answer("Ошибка проверки прав доступа", show_alert=True)
         return
     
     parts = data.split('_')
@@ -1008,7 +1070,7 @@ async def handle_admin_action(query, data, context):
         )
     
     elif action == 'reject':
-        # Отклонение оплаты
+        # Отклонение оплата
         db.update_order_status(order_id, 'payment_rejected', 'rejected')
         
         # Отправляем уведомление пользователю
@@ -1042,6 +1104,11 @@ def main():
         logger.error("💡 Установите переменную окружения BOT_TOKEN")
         return
     
+    # Проверяем GROUP_ID
+    if not GROUP_ID or GROUP_ID == '-5083395375':
+        logger.warning("⚠️ ВНИМАНИЕ: GROUP_ID не установлен или имеет значение по умолчанию!")
+        logger.warning("💡 Создайте файл .env и добавьте: GROUP_ID='-ваш_ид_группы'")
+    
     # Создаем приложение
     application = Application.builder().token(BOT_TOKEN).build()
     
@@ -1058,6 +1125,7 @@ def main():
     logger.info(f"🚚 Доставка по {DELIVERY_AREA}: {DELIVERY_COST}{CURRENCY}")
     logger.info(f"📞 Телефон: 010-8361-6165")
     logger.info(f"👥 Группа админов: {GROUP_ID}")
+    logger.info(f"✅ Для тестирования создайте файл .env с переменной GROUP_ID='-ваш_ид_группы'")
     
     application.run_polling()
 
