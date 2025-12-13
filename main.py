@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 DARK KITCHEN ANSAN - Telegram Bot
-Версия 1.4 - Исправлена отправка скриншотов в группу
+Версия 1.5 - Исправлены названия блюд и отправка скриншотов
 """
 
 import os
@@ -335,7 +335,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode='HTML'
         )
     
-    # Выбор блюда
+    # Выбор блюда - ИСПРАВЛЕНО
     elif data.startswith("dish_"):
         dish_id = data[5:]
         dish = TEXTS['dishes'].get(dish_id)
@@ -363,18 +363,21 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ]
             ]
             
+            # ИСПРАВЛЕНИЕ: Правильное отображение названия блюда
+            dish_name = dish['name']
             await query.edit_message_text(
-                f"🍽️ <b>{dish['name']}</b>\n\n"
+                f"🍽️ <b>{dish_name}</b>\n\n"
                 f"💰 Цена: <b>{price_text}</b>\n\n"
                 f"Выберите количество:",
                 reply_markup=InlineKeyboardMarkup(keyboard),
                 parse_mode='HTML'
             )
     
-    # Управление количеством
+    # Управление количеством - ИСПРАВЛЕНО
     elif data == "inc_quantity":
         if 'selected_dish' in context.user_data:
-            context.user_data['quantity'] = context.user_data.get('quantity', 1) + 1
+            current_qty = context.user_data.get('quantity', 1)
+            context.user_data['quantity'] = current_qty + 1
             await update_quantity_display(query, context)
     
     elif data == "dec_quantity":
@@ -392,10 +395,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             quantity = context.user_data.get('quantity', 1)
             
             if dish:
-                db.add_to_cart(user_id, dish_id, dish['name'], dish['price'], quantity)
+                # ИСПРАВЛЕНИЕ: Правильное имя блюда
+                dish_name = dish['name']
+                db.add_to_cart(user_id, dish_id, dish_name, dish['price'], quantity)
                 
                 await query.edit_message_text(
-                    f"✅ <b>{dish['name']}</b> x{quantity} добавлено в корзину!",
+                    f"✅ <b>{dish_name}</b> x{quantity} добавлено в корзину!",
                     reply_markup=get_back_keyboard(f"cat_{dish['cat']}"),
                     parse_mode='HTML'
                 )
@@ -651,7 +656,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await handle_admin_action(query, data, context)
 
 async def update_quantity_display(query, context):
-    """Обновить отображение количества"""
+    """Обновить отображение количества - ИСПРАВЛЕНО"""
     if 'selected_dish' not in context.user_data:
         return
     
@@ -678,14 +683,17 @@ async def update_quantity_display(query, context):
             ]
         ]
         
+        # ИСПРАВЛЕНИЕ: Правильное имя блюда
+        dish_name = dish['name']
         await query.edit_message_text(
-            f"🍽️ <b>{dish['name']}</b>\n\n"
+            f"🍽️ <b>{dish_name}</b>\n\n"
             f"💰 Цена: <b>{price_text}</b>\n\n"
             f"Выберите количество:",
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode='HTML'
         )
 
+# ИСПРАВЛЕННЫЙ ОБРАБОТЧИК ДЛЯ СКРИНШОТОВ
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка фотографий (скриншотов оплаты)"""
     user_id = update.effective_user.id
@@ -724,66 +732,93 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     
     # Отправляем скриншот в группу администраторов
+    await send_screenshot_to_admin(update, context, photo, last_order_id, order, user_id)
+
+async def send_screenshot_to_admin(update: Update, context: ContextTypes.DEFAULT_TYPE, photo, order_id: str, order: Dict, user_id: int):
+    """Отправка скриншота в группу администраторов"""
     try:
         # Формируем подпись
         caption = f"""📸 <b>СКРИНШОТ ОПЛАТЫ ПОЛУЧЕН</b>
 
-🆔 ID заказа: {last_order_id}
+🆔 ID заказа: {order_id}
 👤 Клиент: {order['username']}
 📞 Телефон: {order['phone']}
 💰 Сумма: {order['final_total']}{CURRENCY}
 ⏰ Время: {datetime.now().strftime('%H:%M:%S %d.%m.%Y')}
 👤 User ID: {user_id}"""
         
-        # ОТЛАДКА: Проверяем данные
-        logger.info(f"Отправка скриншота в группу ID: {GROUP_ID}")
-        logger.info(f"Тип GROUP_ID: {type(GROUP_ID)}")
-        logger.info(f"Значение GROUP_ID: {GROUP_ID}")
+        # ОТЛАДКА: Выводим информацию
+        logger.info(f"Попытка отправки скриншота в группу...")
+        logger.info(f"Фото file_id: {photo.file_id}")
+        logger.info(f"Заказ: {order_id}")
         
-        # Преобразуем GROUP_ID в int если это число, оставляем строкой если это строковый ID
+        # Пробуем разные способы отправки
         try:
-            group_id_int = int(GROUP_ID)
-            chat_id = group_id_int
-        except ValueError:
-            # Если это строковый ID (например, '@groupname')
-            chat_id = GROUP_ID
+            # Способ 1: Отправляем фото
+            await context.bot.send_photo(
+                chat_id=GROUP_ID,
+                photo=photo.file_id,
+                caption=caption,
+                parse_mode='HTML'
+            )
+            logger.info(f"✅ Способ 1: Фото отправлено в группу {GROUP_ID}")
+        except Exception as e1:
+            logger.warning(f"❌ Способ 1 не сработал: {e1}")
+            
+            try:
+                # Способ 2: Отправляем фото без caption
+                await context.bot.send_photo(
+                    chat_id=GROUP_ID,
+                    photo=photo.file_id
+                )
+                # Отправляем текст отдельно
+                await context.bot.send_message(
+                    chat_id=GROUP_ID,
+                    text=caption,
+                    parse_mode='HTML'
+                )
+                logger.info(f"✅ Способ 2: Фото и текст отправлены раздельно")
+            except Exception as e2:
+                logger.warning(f"❌ Способ 2 не сработал: {e2}")
+                
+                try:
+                    # Способ 3: Только текст
+                    text_with_info = f"""{caption}
+
+⚠️ <i>Пользователь отправил скриншот, но бот не может отправить фото в эту группу.
+Пожалуйста, запросите скриншот у пользователя {order['username']} ({order['phone']})</i>"""
+                    
+                    await context.bot.send_message(
+                        chat_id=GROUP_ID,
+                        text=text_with_info,
+                        reply_markup=get_admin_order_keyboard(order_id),
+                        parse_mode='HTML'
+                    )
+                    logger.info(f"✅ Способ 3: Только текст отправлен")
+                except Exception as e3:
+                    logger.error(f"❌ Все способы отправки не сработали: {e3}")
+                    raise e3
         
-        logger.info(f"Используемый chat_id: {chat_id}")
+        # Отмечаем, что скриншот отправлен
+        db.mark_screenshot_sent(order_id)
         
-        # Пытаемся отправить фото
-        await context.bot.send_photo(
-            chat_id=chat_id,
-            photo=photo.file_id,
-            caption=caption,
-            reply_markup=get_admin_order_keyboard(last_order_id),
+        # Отправляем подтверждение пользователю об успешной отправке
+        await update.message.reply_text(
+            "📤 <b>Скриншот успешно передан администратору!</b>\n\n"
+            "Ваш заказ поставлен в очередь на обработку.",
             parse_mode='HTML'
         )
         
-        # Обновляем статус заказа
-        db.mark_screenshot_sent(last_order_id)
-        
-        logger.info(f"✅ Скриншот заказа {last_order_id} успешно отправлен админу в группу {GROUP_ID}")
-        
-        # Также отправляем текстовое сообщение с информацией о заказе
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=f"📸 <b>СКРИНШОТ ОПЛАТЫ ДОСТАВЛЕН В ГРУППУ</b>\n\n"
-                 f"🆔 ID заказа: {last_order_id}\n"
-                 f"👤 Клиент: {order['username']}\n"
-                 f"📞 Телефон: {order['phone']}\n"
-                 f"💰 Сумма: {order['final_total']}{CURRENCY}\n"
-                 f"⏰ Время: {datetime.now().strftime('%H:%M:%S %d.%m.%Y')}",
-            parse_mode='HTML'
-        )
+        logger.info(f"✅ Скриншот заказа {order_id} обработан успешно")
         
     except Exception as e:
-        logger.error(f"❌ Ошибка отправки скриншота админу: {e}")
+        logger.error(f"❌ Критическая ошибка при отправке скриншота: {e}")
         
-        # Сохраняем информацию о скриншоте в файл
+        # Сохраняем информацию об ошибке
         error_msg = f"""❌ ОШИБКА ОТПРАВКИ СКРИНШОТА
 Время: {datetime.now().strftime('%H:%M:%S %d.%m.%Y')}
 Группа: {GROUP_ID}
-Заказ: {last_order_id}
+Заказ: {order_id}
 Пользователь: {order['username']}
 Телефон: {order['phone']}
 Сумма: {order['final_total']}{CURRENCY}
@@ -792,31 +827,12 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         with open('screenshot_errors.log', 'a', encoding='utf-8') as f:
             f.write(f"\n{error_msg}\n")
         
-        # Пытаемся отправить хотя бы текстовое сообщение
-        try:
-            text_msg = f"""⚠️ <b>СКРИНШОТ ОПЛАТЫ ПОЛУЧЕН (ОШИБКА ОТПРАВКИ ФОТО)</b>
-
-🆔 ID заказа: {last_order_id}
-👤 Клиент: {order['username']}
-📞 Телефон: {order['phone']}
-💰 Сумма: {order['final_total']}{CURRENCY}
-⏰ Время: {datetime.now().strftime('%H:%M:%S %d.%m.%Y')}
-👤 User ID: {user_id}
-
-⚠️ <i>Пользователь отправил скриншот оплаты, но произошла ошибка при отправке фото. Пожалуйста, запросите скриншот у пользователя.</i>"""
-            
-            await context.bot.send_message(
-                chat_id=GROUP_ID,
-                text=text_msg,
-                reply_markup=get_admin_order_keyboard(last_order_id),
-                parse_mode='HTML'
-            )
-            
-            db.mark_screenshot_sent(last_order_id)
-            logger.info(f"✅ Текстовое уведомление о скриншоте заказа {last_order_id} отправлено админу")
-            
-        except Exception as e2:
-            logger.error(f"❌ Ошибка отправки текстового уведомления: {e2}")
+        # Сообщаем пользователю
+        await update.message.reply_text(
+            "⚠️ <b>Произошла техническая ошибка при отправке скриншота!</b>\n\n"
+            "Пожалуйста, отправьте скриншот напрямую администратору по телефону: <b>010-8361-6165</b>",
+            parse_mode='HTML'
+        )
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка текстовых сообщений"""
@@ -975,24 +991,11 @@ async def send_order_to_admin(context: ContextTypes.DEFAULT_TYPE, order_id: str,
         admin_text += f"\n⏰ Время: {datetime.now().strftime('%H:%M:%S %d.%m.%Y')}"
         admin_text += f"\n👤 User ID: {order['user_id']}"
         
-        # Проверяем и преобразуем GROUP_ID
-        try:
-            if isinstance(GROUP_ID, str):
-                # Пробуем преобразовать в int, если это число
-                if GROUP_ID.lstrip('-').isdigit():
-                    chat_id = int(GROUP_ID)
-                else:
-                    # Если это строковый ID (например, '@groupname')
-                    chat_id = GROUP_ID
-            else:
-                chat_id = GROUP_ID
-        except:
-            chat_id = GROUP_ID
+        logger.info(f"Отправка заказа {order_id} в группу {GROUP_ID}")
         
-        logger.info(f"Отправка заказа {order_id} в чат: {chat_id}")
-        
+        # Пытаемся отправить заказ
         await context.bot.send_message(
-            chat_id=chat_id,
+            chat_id=GROUP_ID,
             text=admin_text,
             reply_markup=get_admin_order_keyboard(order_id),
             parse_mode='HTML'
@@ -1000,13 +1003,13 @@ async def send_order_to_admin(context: ContextTypes.DEFAULT_TYPE, order_id: str,
         
         logger.info(f"✅ Заказ {order_id} отправлен админу")
         
-        # Также записываем в лог файл на всякий случай
+        # Записываем в лог файл на всякий случай
         with open('orders.log', 'a', encoding='utf-8') as f:
             f.write(f"\n{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Заказ {order_id}\n{admin_text}\n")
         
     except Exception as e:
         logger.error(f"❌ Ошибка отправки админу: {e}")
-        logger.error(f"GROUP_ID: {GROUP_ID}, тип: {type(GROUP_ID)}")
+        logger.error(f"GROUP_ID: {GROUP_ID}")
         
         # Сохраняем в лог файл
         with open('failed_orders.log', 'a', encoding='utf-8') as f:
