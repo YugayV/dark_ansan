@@ -1,11 +1,3 @@
-[file name]: main.py
-[file content begin]
-#!/usr/bin/env python3
-"""
-DARK KITCHEN ANSAN - Telegram Bot
-Версия 1.6 - Добавлен ввод адреса и фото адреса
-"""
-
 import os
 import logging
 import re
