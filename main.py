@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 DARK KITCHEN ANSAN - Telegram Bot
-Версия 1.1 - С кнопкой корзины во всех меню
+Версия 1.2 - С обработкой скриншотов и исправленной корзиной
 """
 
 import os
@@ -91,14 +91,14 @@ TEXTS = {
 class Database:
     """Простая база данных в памяти"""
     def __init__(self):
-        self.user_data = {}  # {user_id: {'cart': {...}, ...}}
+        self.user_data = {}  # {user_id: {'cart': {...}, 'last_order': order_id, ...}}
         self.orders = {}     # {order_id: order_data}
         self.order_counter = 0
     
     def get_user(self, user_id: int) -> Dict:
         """Получить данные пользователя"""
         if user_id not in self.user_data:
-            self.user_data[user_id] = {'cart': {}}
+            self.user_data[user_id] = {'cart': {}, 'last_order': None}
         return self.user_data[user_id]
     
     def get_cart(self, user_id: int) -> Dict:
@@ -155,8 +155,12 @@ class Database:
             'final_total': final_total,
             'status': 'waiting_payment',
             'created_at': time.time(),
-            'payment_status': 'pending'
+            'payment_status': 'pending',
+            'screenshot_sent': False  # Флаг отправки скриншота
         }
+        
+        # Сохраняем ID последнего заказа у пользователя
+        self.user_data[user_id]['last_order'] = order_id
         
         # Очищаем корзину
         self.clear_cart(user_id)
@@ -168,12 +172,24 @@ class Database:
         """Получить заказ по ID"""
         return self.orders.get(order_id)
     
+    def get_user_last_order(self, user_id: int) -> str:
+        """Получить ID последнего заказа пользователя"""
+        user = self.get_user(user_id)
+        return user.get('last_order')
+    
     def update_order_status(self, order_id: str, status: str, payment_status: str = None):
         """Обновить статус заказа"""
         if order_id in self.orders:
             self.orders[order_id]['status'] = status
             if payment_status:
                 self.orders[order_id]['payment_status'] = payment_status
+            return True
+        return False
+    
+    def mark_screenshot_sent(self, order_id: str):
+        """Отметить, что скриншот отправлен"""
+        if order_id in self.orders:
+            self.orders[order_id]['screenshot_sent'] = True
             return True
         return False
 
@@ -551,6 +567,78 @@ async def update_quantity_display(query, context):
             parse_mode='HTML'
         )
 
+# ИСПРАВЛЕНИЕ: Добавлен обработчик для фотографий
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка фотографий (скриншотов оплаты)"""
+    user_id = update.effective_user.id
+    photo = update.message.photo[-1]  # Берем самое большое фото
+    
+    logger.info(f"Получен скриншот от пользователя {user_id}")
+    
+    # Получаем ID последнего заказа пользователя
+    last_order_id = db.get_user_last_order(user_id)
+    
+    if not last_order_id:
+        await update.message.reply_text(
+            "❌ <b>У вас нет активных заказов!</b>\n\n"
+            "Сначала оформите заказ, а затем отправьте скриншот оплаты.",
+            parse_mode='HTML'
+        )
+        return
+    
+    order = db.get_order(last_order_id)
+    
+    if not order:
+        await update.message.reply_text(
+            "❌ <b>Заказ не найден!</b>\n\n"
+            "Сначала оформите заказ, а затем отправьте скриншот оплаты.",
+            parse_mode='HTML'
+        )
+        return
+    
+    # Отправляем подтверждение пользователю
+    await update.message.reply_text(
+        "✅ <b>Скриншот оплаты получен!</b>\n\n"
+        f"🆔 ID заказа: {last_order_id}\n"
+        f"💰 Сумма: {order['final_total']}{CURRENCY}\n\n"
+        "⏳ <i>Администратор проверит оплату в течение 5-10 минут.</i>",
+        parse_mode='HTML'
+    )
+    
+    # Отправляем скриншот в группу администраторов
+    try:
+        # Отправляем фото с подписью
+        caption = f"""📸 <b>СКРИНШОТ ОПЛАТЫ ПОЛУЧЕН</b>
+
+🆔 ID заказа: {last_order_id}
+👤 Клиент: {order['username']}
+📞 Телефон: {order['phone']}
+💰 Сумма: {order['final_total']}{CURRENCY}
+⏰ Время: {datetime.now().strftime('%H:%M:%S %d.%m.%Y')}
+👤 User ID: {user_id}"""
+        
+        # Пересылаем фото в группу
+        await context.bot.send_photo(
+            chat_id=GROUP_ID,
+            photo=photo.file_id,
+            caption=caption,
+            reply_markup=get_admin_order_keyboard(last_order_id),
+            parse_mode='HTML'
+        )
+        
+        # Обновляем статус заказа
+        db.mark_screenshot_sent(last_order_id)
+        
+        logger.info(f"✅ Скриншот заказа {last_order_id} отправлен админу")
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка отправки скриншота админу: {e}")
+        await update.message.reply_text(
+            "❌ <b>Произошла ошибка при отправке скриншота!</b>\n\n"
+            "Пожалуйста, попробуйте снова или свяжитесь с нами по телефону: 010-8361-6165",
+            parse_mode='HTML'
+        )
+
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка текстовых сообщений"""
     user_id = update.effective_user.id
@@ -775,6 +863,9 @@ def main():
     # Регистрируем обработчики
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CallbackQueryHandler(handle_callback))
+    
+    # ИСПРАВЛЕНИЕ: Добавляем обработчик для фотографий перед текстом
+    application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     
     # Запускаем бота
@@ -782,7 +873,7 @@ def main():
     logger.info(f"⏰ Работаем: {WORK_TIME}")
     logger.info(f"🍺 Похмельное время: {HANGOVER_TIME}")
     logger.info(f"🚚 Доставка по {DELIVERY_AREA}: {DELIVERY_COST}{CURRENCY}")
-    logger.info(f"📞 Телефон: 010-8028-1960")
+    logger.info(f"📞 Телефон: 010-8361-6165")
     
     application.run_polling()
 
