@@ -28,7 +28,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 BOT_TOKEN = "8447150166:AAEqWqBJOBYK5pgVp7euAx-7q3mF5iOz6Ko" 
-GROUP_ID = os.getenv('GROUP_ID', '-5083395375')  # ID группы администраторов
+GROUP_ID = os.getenv('GROUP_ID', '-5045934907')  # ID группы администраторов
 
 # Время работы
 WORK_TIME = "с 22:00 по 10:00 утра"
