@@ -1,9 +1,17 @@
+#!/usr/bin/env python3
+"""
+DARK KITCHEN ANSAN - Telegram Bot
+Версия 1.6.1 - Исправлена проблема с выбором количества блюда
+"""
+
 import os
 import logging
 import re
 import time
+import sys
 from datetime import datetime
 from typing import Dict, List, Any
+from pathlib import Path
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -15,7 +23,6 @@ from telegram.ext import (
     filters
 )
 
-import os
 from dotenv import load_dotenv
 
 # Загружаем .env файл
@@ -339,26 +346,26 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode='HTML'
         )
     
-    # Выбор блюда
+    # Выбор блюда - ИСПРАВЛЕННЫЙ ВАРИАНТ
     elif data.startswith("dish_"):
         dish_id = data[5:]
         dish = TEXTS['dishes'].get(dish_id)
         
         if dish:
-            # Сохраняем выбранное блюдо
-            context.user_data['selected_dish'] = dish_id
-            context.user_data['quantity'] = 1
+            # Сохраняем выбранное блюдо в контексте пользователя
+            context.user_data['current_dish_id'] = dish_id
+            context.user_data['current_quantity'] = 1
             
             price_text = f"{dish['price']}{CURRENCY}" if dish['price'] > 0 else "БЕСПЛАТНО"
             
             keyboard = [
                 [
-                    InlineKeyboardButton("➖", callback_data="dec_quantity"),
+                    InlineKeyboardButton("➖", callback_data=f"dec_qty_{dish_id}"),  # Добавляем dish_id
                     InlineKeyboardButton("1", callback_data="noop"),
-                    InlineKeyboardButton("➕", callback_data="inc_quantity")
+                    InlineKeyboardButton("➕", callback_data=f"inc_qty_{dish_id}")   # Добавляем dish_id
                 ],
                 [
-                    InlineKeyboardButton("✅ Добавить в корзину", callback_data="add_to_cart"),
+                    InlineKeyboardButton("✅ Добавить в корзину", callback_data=f"add_dish_{dish_id}"),
                     InlineKeyboardButton("🛒 В корзину", callback_data="view_cart")
                 ],
                 [
@@ -376,36 +383,117 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode='HTML'
             )
     
-    # Управление количеством
-    elif data == "inc_quantity":
-        if 'selected_dish' in context.user_data:
-            current_qty = context.user_data.get('quantity', 1)
-            context.user_data['quantity'] = current_qty + 1
-            await update_quantity_display(query, context)
-    
-    elif data == "dec_quantity":
-        if 'selected_dish' in context.user_data:
-            current_qty = context.user_data.get('quantity', 1)
-            if current_qty > 1:
-                context.user_data['quantity'] = current_qty - 1
-                await update_quantity_display(query, context)
-    
-    # Добавление в корзину
-    elif data == "add_to_cart":
-        if 'selected_dish' in context.user_data:
-            dish_id = context.user_data['selected_dish']
-            dish = TEXTS['dishes'].get(dish_id)
-            quantity = context.user_data.get('quantity', 1)
+    # Увеличение количества - ИСПРАВЛЕННЫЙ ВАРИАНТ
+    elif data.startswith("inc_qty_"):
+        dish_id = data[8:]  # Извлекаем dish_id из callback
+        dish = TEXTS['dishes'].get(dish_id)
+        
+        if dish:
+            # Получаем текущее количество из контекста или устанавливаем 1
+            current_qty = context.user_data.get('current_quantity', 1)
+            new_qty = current_qty + 1
             
-            if dish:
-                dish_name = dish['name']
-                db.add_to_cart(user_id, dish_id, dish_name, dish['price'], quantity)
-                
-                await query.edit_message_text(
-                    f"✅ <b>{dish_name}</b> x{quantity} добавлено в корзину!",
-                    reply_markup=get_back_keyboard(f"cat_{dish['cat']}"),
-                    parse_mode='HTML'
-                )
+            # Сохраняем новое количество
+            context.user_data['current_dish_id'] = dish_id
+            context.user_data['current_quantity'] = new_qty
+            
+            price_text = f"{dish['price']}{CURRENCY}" if dish['price'] > 0 else "БЕСПЛАТНО"
+            
+            keyboard = [
+                [
+                    InlineKeyboardButton("➖", callback_data=f"dec_qty_{dish_id}"),
+                    InlineKeyboardButton(str(new_qty), callback_data="noop"),
+                    InlineKeyboardButton("➕", callback_data=f"inc_qty_{dish_id}")
+                ],
+                [
+                    InlineKeyboardButton("✅ Добавить в корзину", callback_data=f"add_dish_{dish_id}"),
+                    InlineKeyboardButton("🛒 В корзину", callback_data="view_cart")
+                ],
+                [
+                    InlineKeyboardButton("🍽️ Меню", callback_data="menu_categories"),
+                    InlineKeyboardButton("🏠 Главное", callback_data="main_menu")
+                ]
+            ]
+            
+            dish_name = dish['name']
+            await query.edit_message_text(
+                f"🍽️ <b>{dish_name}</b>\n\n"
+                f"💰 Цена: <b>{price_text}</b>\n\n"
+                f"Выберите количество:",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode='HTML'
+            )
+    
+    # Уменьшение количества - ИСПРАВЛЕННЫЙ ВАРИАНТ
+    elif data.startswith("dec_qty_"):
+        dish_id = data[8:]  # Извлекаем dish_id из callback
+        dish = TEXTS['dishes'].get(dish_id)
+        
+        if dish:
+            # Получаем текущее количество из контекста или устанавливаем 1
+            current_qty = context.user_data.get('current_quantity', 1)
+            new_qty = max(1, current_qty - 1)  # Не меньше 1
+            
+            # Сохраняем новое количество
+            context.user_data['current_dish_id'] = dish_id
+            context.user_data['current_quantity'] = new_qty
+            
+            price_text = f"{dish['price']}{CURRENCY}" if dish['price'] > 0 else "БЕСПЛАТНО"
+            
+            keyboard = [
+                [
+                    InlineKeyboardButton("➖", callback_data=f"dec_qty_{dish_id}"),
+                    InlineKeyboardButton(str(new_qty), callback_data="noop"),
+                    InlineKeyboardButton("➕", callback_data=f"inc_qty_{dish_id}")
+                ],
+                [
+                    InlineKeyboardButton("✅ Добавить в корзину", callback_data=f"add_dish_{dish_id}"),
+                    InlineKeyboardButton("🛒 В корзину", callback_data="view_cart")
+                ],
+                [
+                    InlineKeyboardButton("🍽️ Меню", callback_data="menu_categories"),
+                    InlineKeyboardButton("🏠 Главное", callback_data="main_menu")
+                ]
+            ]
+            
+            dish_name = dish['name']
+            await query.edit_message_text(
+                f"🍽️ <b>{dish_name}</b>\n\n"
+                f"💰 Цена: <b>{price_text}</b>\n\n"
+                f"Выберите количество:",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode='HTML'
+            )
+    
+    # Кнопка без действия
+    elif data == "noop":
+        # Просто отвечаем на callback без действий
+        return
+    
+    # Добавление в корзину - ИСПРАВЛЕННЫЙ ВАРИАНТ
+    elif data.startswith("add_dish_"):
+        dish_id = data[9:]  # Извлекаем dish_id из callback
+        dish = TEXTS['dishes'].get(dish_id)
+        
+        if dish:
+            # Получаем количество из контекста или устанавливаем 1
+            quantity = context.user_data.get('current_quantity', 1)
+            dish_name = dish['name']
+            
+            # Добавляем в корзину
+            db.add_to_cart(user_id, dish_id, dish_name, dish['price'], quantity)
+            
+            # Очищаем контекст
+            if 'current_dish_id' in context.user_data:
+                del context.user_data['current_dish_id']
+            if 'current_quantity' in context.user_data:
+                del context.user_data['current_quantity']
+            
+            await query.edit_message_text(
+                f"✅ <b>{dish_name}</b> x{quantity} добавлено в корзину!",
+                reply_markup=get_back_keyboard(f"cat_{dish['cat']}"),
+                parse_mode='HTML'
+            )
     
     # Корзина
     elif data == "view_cart":
@@ -689,43 +777,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Действия администратора
     elif data.startswith("admin_"):
         await handle_admin_action(query, data, context)
-
-async def update_quantity_display(query, context):
-    """Обновить отображение количества"""
-    if 'selected_dish' not in context.user_data:
-        return
-    
-    dish_id = context.user_data['selected_dish']
-    dish = TEXTS['dishes'].get(dish_id)
-    quantity = context.user_data.get('quantity', 1)
-    
-    if dish:
-        price_text = f"{dish['price']}{CURRENCY}" if dish['price'] > 0 else "БЕСПЛАТНО"
-        
-        keyboard = [
-            [
-                InlineKeyboardButton("➖", callback_data="dec_quantity"),
-                InlineKeyboardButton(str(quantity), callback_data="noop"),
-                InlineKeyboardButton("➕", callback_data="inc_quantity")
-            ],
-            [
-                InlineKeyboardButton("✅ Добавить в корзину", callback_data="add_to_cart"),
-                InlineKeyboardButton("🛒 В корзину", callback_data="view_cart")
-            ],
-            [
-                InlineKeyboardButton("🍽️ Меню", callback_data="menu_categories"),
-                InlineKeyboardButton("🏠 Главное", callback_data="main_menu")
-            ]
-        ]
-        
-        dish_name = dish['name']
-        await query.edit_message_text(
-            f"🍽️ <b>{dish_name}</b>\n\n"
-            f"💰 Цена: <b>{price_text}</b>\n\n"
-            f"Выберите количество:",
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode='HTML'
-        )
 
 # ОБРАБОТЧИК ДЛЯ ФОТО АДРЕСА
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1200,13 +1251,43 @@ async def handle_admin_action(query, data, context):
 # ==================== ЗАПУСК БОТА ====================
 def main():
     """Основная функция запуска бота"""
+    
+    # ========== ЗАЩИТА ОТ МНОГОКРАТНОГО ЗАПУСКА ==========
+    lock_file = Path("bot.lock")
+    
+    try:
+        # Пытаемся создать lock файл
+        lock_fd = os.open(lock_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        # Пишем в lock файл PID процесса
+        os.write(lock_fd, str(os.getpid()).encode())
+        os.close(lock_fd)
+    except OSError:
+        print("❌ Бот уже запущен!")
+        print("💡 Проверьте запущенные процессы и завершите дубликаты:")
+        print("   pkill -f python  # завершит все процессы Python")
+        print("   Или проверьте: ps aux | grep python")
+        sys.exit(1)
+    
+    def cleanup():
+        """Очистка lock файла при завершении"""
+        try:
+            lock_file.unlink()
+        except:
+            pass
+    
+    # Регистрируем очистку при завершении
+    import atexit
+    atexit.register(cleanup)
+    # ====================================================
+    
     if not BOT_TOKEN or BOT_TOKEN == 'ВАШ_ТОКЕН_БОТА':
         logger.error("❌ Ошибка: BOT_TOKEN не установлен!")
         logger.error("💡 Установите переменную окружения BOT_TOKEN")
+        cleanup()
         return
     
     # Проверяем GROUP_ID
-    if not GROUP_ID or GROUP_ID == '--5045934907':
+    if not GROUP_ID or GROUP_ID == '-5083395375':
         logger.warning("⚠️ ВНИМАНИЕ: GROUP_ID не установлен или имеет значение по умолчанию!")
         logger.warning("💡 Создайте файл .env и добавьте: GROUP_ID='-ваш_ид_группы'")
     
