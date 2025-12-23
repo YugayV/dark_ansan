@@ -228,7 +228,7 @@ def get_main_menu_keyboard():
 def get_categories_keyboard():
     """Клавиатура категорий меню"""
     keyboard = [
-        [InlineKeyboardButton(TEXTS['categories']['firsts'], callback_data="cat_first")],
+        [InlineKeyboardButton(TEXTS['categories']['first'], callback_data="cat_first")],
         [InlineKeyboardButton(TEXTS['categories']['second'], callback_data="cat_second")],
         [InlineKeyboardButton(TEXTS['categories']['extra'], callback_data="cat_extra")],
         [InlineKeyboardButton(TEXTS['categories']['hangover'], callback_data="cat_hangover")],
