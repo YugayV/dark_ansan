@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 DARK KITCHEN ANSAN - Telegram Bot
-Версия 1.6.2 - Исправлена отправка скриншотов администраторам
+Версия 2.1 - Автоматическая отправка фото адреса и уведомления
 """
 
 import os
@@ -9,6 +9,7 @@ import logging
 import re
 import time
 import sys
+import socket
 from datetime import datetime
 from typing import Dict, List, Any
 from pathlib import Path
@@ -190,7 +191,7 @@ class Database:
         return user.get('last_order')
     
     def update_order_status(self, order_id: str, status: str, payment_status: str = None):
-        """Обновить статус заказ"""
+        """Обновить статус заказа"""
         if order_id in self.orders:
             self.orders[order_id]['status'] = status
             if payment_status:
@@ -298,6 +299,19 @@ def get_admin_order_keyboard(order_id: str):
     ]
     return InlineKeyboardMarkup(keyboard)
 
+# ==================== ЗАЩИТА ОТ МНОГОКРАТНОГО ЗАПУСКА ====================
+def check_single_instance():
+    """Проверка, что бот запущен только в одном экземпляре"""
+    try:
+        lock_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        lock_socket.bind(('localhost', 9999))
+        logger.info("🔒 Проверка блокировки: OK - бот может быть запущен")
+        return lock_socket
+    except socket.error:
+        logger.error("❌ Бот уже запущен в другом процессе!")
+        logger.error("💡 Выполните: sudo pkill -f python")
+        sys.exit(1)
+
 # ==================== ОБРАБОТЧИКИ ====================
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка команды /start"""
@@ -352,20 +366,19 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         dish = TEXTS['dishes'].get(dish_id)
         
         if dish:
-            # Сохраняем выбранное блюдо в контексте пользователя
-            context.user_data['current_dish_id'] = dish_id
-            context.user_data['current_quantity'] = 1
+            context.user_data['selected_dish'] = dish_id
+            context.user_data['quantity'] = 1
             
             price_text = f"{dish['price']}{CURRENCY}" if dish['price'] > 0 else "БЕСПЛАТНО"
             
             keyboard = [
                 [
-                    InlineKeyboardButton("➖", callback_data=f"dec_qty_{dish_id}"),
+                    InlineKeyboardButton("➖", callback_data="dec_quantity"),
                     InlineKeyboardButton("1", callback_data="noop"),
-                    InlineKeyboardButton("➕", callback_data=f"inc_qty_{dish_id}")
+                    InlineKeyboardButton("➕", callback_data="inc_quantity")
                 ],
                 [
-                    InlineKeyboardButton("✅ Добавить в корзину", callback_data=f"add_dish_{dish_id}"),
+                    InlineKeyboardButton("✅ Добавить в корзину", callback_data="add_to_cart"),
                     InlineKeyboardButton("🛒 В корзину", callback_data="view_cart")
                 ],
                 [
@@ -384,116 +397,46 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
     
     # Увеличение количества
-    elif data.startswith("inc_qty_"):
-        dish_id = data[8:]  # Извлекаем dish_id из callback
-        dish = TEXTS['dishes'].get(dish_id)
-        
-        if dish:
-            # Получаем текущее количество из контекста или устанавливаем 1
-            current_qty = context.user_data.get('current_quantity', 1)
-            new_qty = current_qty + 1
-            
-            # Сохраняем новое количество
-            context.user_data['current_dish_id'] = dish_id
-            context.user_data['current_quantity'] = new_qty
-            
-            price_text = f"{dish['price']}{CURRENCY}" if dish['price'] > 0 else "БЕСПЛАТНО"
-            
-            keyboard = [
-                [
-                    InlineKeyboardButton("➖", callback_data=f"dec_qty_{dish_id}"),
-                    InlineKeyboardButton(str(new_qty), callback_data="noop"),
-                    InlineKeyboardButton("➕", callback_data=f"inc_qty_{dish_id}")
-                ],
-                [
-                    InlineKeyboardButton("✅ Добавить в корзину", callback_data=f"add_dish_{dish_id}"),
-                    InlineKeyboardButton("🛒 В корзину", callback_data="view_cart")
-                ],
-                [
-                    InlineKeyboardButton("🍽️ Меню", callback_data="menu_categories"),
-                    InlineKeyboardButton("🏠 Главное", callback_data="main_menu")
-                ]
-            ]
-            
-            dish_name = dish['name']
-            await query.edit_message_text(
-                f"🍽️ <b>{dish_name}</b>\n\n"
-                f"💰 Цена: <b>{price_text}</b>\n\n"
-                f"Выберите количество:",
-                reply_markup=InlineKeyboardMarkup(keyboard),
-                parse_mode='HTML'
-            )
+    elif data == "inc_quantity":
+        if 'selected_dish' in context.user_data:
+            current_qty = context.user_data.get('quantity', 1)
+            context.user_data['quantity'] = current_qty + 1
+            await update_quantity_display(query, context)
     
     # Уменьшение количества
-    elif data.startswith("dec_qty_"):
-        dish_id = data[8:]  # Извлекаем dish_id из callback
-        dish = TEXTS['dishes'].get(dish_id)
-        
-        if dish:
-            # Получаем текущее количество из контекста или устанавливаем 1
-            current_qty = context.user_data.get('current_quantity', 1)
-            new_qty = max(1, current_qty - 1)  # Не меньше 1
-            
-            # Сохраняем новое количество
-            context.user_data['current_dish_id'] = dish_id
-            context.user_data['current_quantity'] = new_qty
-            
-            price_text = f"{dish['price']}{CURRENCY}" if dish['price'] > 0 else "БЕСПЛАТНО"
-            
-            keyboard = [
-                [
-                    InlineKeyboardButton("➖", callback_data=f"dec_qty_{dish_id}"),
-                    InlineKeyboardButton(str(new_qty), callback_data="noop"),
-                    InlineKeyboardButton("➕", callback_data=f"inc_qty_{dish_id}")
-                ],
-                [
-                    InlineKeyboardButton("✅ Добавить в корзину", callback_data=f"add_dish_{dish_id}"),
-                    InlineKeyboardButton("🛒 В корзину", callback_data="view_cart")
-                ],
-                [
-                    InlineKeyboardButton("🍽️ Меню", callback_data="menu_categories"),
-                    InlineKeyboardButton("🏠 Главное", callback_data="main_menu")
-                ]
-            ]
-            
-            dish_name = dish['name']
-            await query.edit_message_text(
-                f"🍽️ <b>{dish_name}</b>\n\n"
-                f"💰 Цена: <b>{price_text}</b>\n\n"
-                f"Выберите количество:",
-                reply_markup=InlineKeyboardMarkup(keyboard),
-                parse_mode='HTML'
-            )
+    elif data == "dec_quantity":
+        if 'selected_dish' in context.user_data:
+            current_qty = context.user_data.get('quantity', 1)
+            if current_qty > 1:
+                context.user_data['quantity'] = current_qty - 1
+                await update_quantity_display(query, context)
     
     # Кнопка без действия
     elif data == "noop":
-        # Просто отвечаем на callback без действий
         return
     
     # Добавление в корзину
-    elif data.startswith("add_dish_"):
-        dish_id = data[9:]  # Извлекаем dish_id из callback
-        dish = TEXTS['dishes'].get(dish_id)
-        
-        if dish:
-            # Получаем количество из контекста или устанавливаем 1
-            quantity = context.user_data.get('current_quantity', 1)
-            dish_name = dish['name']
+    elif data == "add_to_cart":
+        if 'selected_dish' in context.user_data:
+            dish_id = context.user_data['selected_dish']
+            dish = TEXTS['dishes'].get(dish_id)
+            quantity = context.user_data.get('quantity', 1)
             
-            # Добавляем в корзину
-            db.add_to_cart(user_id, dish_id, dish_name, dish['price'], quantity)
-            
-            # Очищаем контекст
-            if 'current_dish_id' in context.user_data:
-                del context.user_data['current_dish_id']
-            if 'current_quantity' in context.user_data:
-                del context.user_data['current_quantity']
-            
-            await query.edit_message_text(
-                f"✅ <b>{dish_name}</b> x{quantity} добавлено в корзину!",
-                reply_markup=get_back_keyboard(f"cat_{dish['cat']}"),
-                parse_mode='HTML'
-            )
+            if dish:
+                dish_name = dish['name']
+                db.add_to_cart(user_id, dish_id, dish_name, dish['price'], quantity)
+                
+                # Очищаем контекст
+                if 'selected_dish' in context.user_data:
+                    del context.user_data['selected_dish']
+                if 'quantity' in context.user_data:
+                    del context.user_data['quantity']
+                
+                await query.edit_message_text(
+                    f"✅ <b>{dish_name}</b> x{quantity} добавлено в корзину!",
+                    reply_markup=get_back_keyboard(f"cat_{dish['cat']}"),
+                    parse_mode='HTML'
+                )
     
     # Корзина
     elif data == "view_cart":
@@ -529,7 +472,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         dish_id = data[7:]
         db.remove_from_cart(user_id, dish_id)
         
-        # Показываем обновленную корзину
         cart = db.get_cart(user_id)
         
         if not cart:
@@ -576,16 +518,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
         
-        # Начинаем оформление
         context.user_data['checkout_step'] = 'phone'
         context.user_data['username'] = query.from_user.username or query.from_user.first_name
         
-        # Проверяем, есть ли сохраненный телефон
         user_data = db.get_user(user_id)
         saved_phone = user_data.get('phone')
         
         if saved_phone:
-            # Предлагаем использовать сохраненный телефон
             keyboard = [
                 [InlineKeyboardButton(f"📞 Использовать: {saved_phone}", callback_data="use_saved_phone")],
                 [InlineKeyboardButton("📝 Ввести новый телефон", callback_data="enter_new_phone")]
@@ -599,7 +538,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode='HTML'
             )
         else:
-            # Просим ввести телефон
             await query.edit_message_text(
                 "📞 <b>Введите ваш телефон:</b>\n\n"
                 "Пример: 01012345678 или 010-1234-5678",
@@ -668,7 +606,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if saved_address:
             context.user_data['address'] = saved_address
             
-            # Получаем все данные для создания заказа
             username = context.user_data['username']
             phone = context.user_data['phone']
             address = saved_address
@@ -678,11 +615,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.edit_message_text("❌ Корзина пуста!")
                 return
             
-            # Создаем заказ
             order_id = db.create_order(user_id, username, phone, address, cart)
             order = db.get_order(order_id)
             
-            # Отправляем подтверждение пользователю
             await complete_order_creation(query, context, order_id, order)
     
     # Ввести адрес текстом
@@ -693,7 +628,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Пример:\n"
             "Ансан, район Танвон-гу, улица Хвачжон, дом 123, квартира 456\n"
             "Код домофона: 1234#\n\n"
-            "📍 <i>Или отправьте точное местоположение из Google Maps/Naver Maps</i>",
+            "<i>После ввода адреса заказ будет автоматически оформлен</i>",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🔙 Назад", callback_data="view_cart")]
             ]),
@@ -709,7 +644,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• Скриншот из Naver Maps/Google Maps\n"
             "• Фото текста с адресом\n"
             "• Фото вашего дома/подъезда\n\n"
-            "<i>Отправьте фото как обычное сообщение</i>",
+            "<i>После отправки фото заказ будет автоматически оформлен</i>",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🔙 Назад", callback_data="view_cart")]
             ]),
@@ -730,6 +665,43 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ]),
             parse_mode='HTML'
         )
+    
+    # Добавить текстовый адрес к фото
+    elif data == "add_address_text":
+        context.user_data['checkout_step'] = 'add_text_to_photo'
+        await query.edit_message_text(
+            "📝 <b>Введите текстовый адрес или комментарий:</b>\n\n"
+            "Пример:\n"
+            "Ансан, район Танвон-гу, улица Хвачжон, дом 123, квартира 456\n"
+            "Код домофона: 1234#\n\n"
+            "<i>Это поможет курьеру быстрее найти ваш адрес</i>",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⏩ Пропустить", callback_data="complete_with_photo_only")]
+            ]),
+            parse_mode='HTML'
+        )
+    
+    # Завершить с только фото
+    elif data == "complete_with_photo_only":
+        if 'address_photo' in context.user_data:
+            user_id = query.from_user.id
+            username = context.user_data['username']
+            phone = context.user_data['phone']
+            address_photo = context.user_data['address_photo']
+            cart = db.get_cart(user_id)
+            
+            if not cart:
+                await query.edit_message_text("❌ Корзина пуста!")
+                return
+            
+            # Создаем заказ с фото адреса
+            order_id = db.create_order(user_id, username, phone, "Адрес на фото (см. фото ниже)", cart, address_photo)
+            order = db.get_order(order_id)
+            
+            # ОТПРАВЛЯЕМ ФОТО АДРЕСА В ГРУППУ АДМИНИСТРАТОРОВ
+            await send_address_photo_to_admin(context, order_id, order, address_photo)
+            
+            await complete_order_creation(query, context, order_id, order)
     
     # Способы заказа
     elif data == "order_methods":
@@ -778,7 +750,44 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("admin_"):
         await handle_admin_action(query, data, context)
 
-# ОБРАБОТЧИК ДЛЯ ФОТО АДРЕСА
+async def update_quantity_display(query, context):
+    """Обновить отображение количества"""
+    if 'selected_dish' not in context.user_data:
+        return
+    
+    dish_id = context.user_data['selected_dish']
+    dish = TEXTS['dishes'].get(dish_id)
+    quantity = context.user_data.get('quantity', 1)
+    
+    if dish:
+        price_text = f"{dish['price']}{CURRENCY}" if dish['price'] > 0 else "БЕСПЛАТНО"
+        
+        keyboard = [
+            [
+                InlineKeyboardButton("➖", callback_data="dec_quantity"),
+                InlineKeyboardButton(str(quantity), callback_data="noop"),
+                InlineKeyboardButton("➕", callback_data="inc_quantity")
+            ],
+            [
+                InlineKeyboardButton("✅ Добавить в корзину", callback_data="add_to_cart"),
+                InlineKeyboardButton("🛒 В корзину", callback_data="view_cart")
+            ],
+            [
+                InlineKeyboardButton("🍽️ Меню", callback_data="menu_categories"),
+                InlineKeyboardButton("🏠 Главное", callback_data="main_menu")
+            ]
+        ]
+        
+        dish_name = dish['name']
+        await query.edit_message_text(
+            f"🍽️ <b>{dish_name}</b>\n\n"
+            f"💰 Цена: <b>{price_text}</b>\n\n"
+            f"Выберите количество:",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode='HTML'
+        )
+
+# ==================== ОБРАБОТКА ФОТО АДРЕСА ====================
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка фотографий (скриншотов оплаты и фото адреса)"""
     user_id = update.effective_user.id
@@ -793,8 +802,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if step == 'address_photo':
             # Пользователь отправляет фото адреса
             context.user_data['address_photo'] = photo.file_id
-            context.user_data['checkout_step'] = 'address_confirmation'
             
+            # ОТПРАВЛЯЕМ ПОДТВЕРЖДЕНИЕ ПОЛЬЗОВАТЕЛЮ
             await update.message.reply_text(
                 "✅ <b>Фото адреса получено!</b>\n\n"
                 "Теперь можно добавить текстовый комментарий к адресу или сразу завершить оформление заказа:",
@@ -805,17 +814,72 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode='HTML'
             )
             return
+        
+        elif step == 'add_text_to_photo':
+            # Если пользователь отправил фото вместо текста
+            context.user_data['address_photo'] = photo.file_id
+            await update.message.reply_text(
+                "📸 <b>Фото адреса получено!</b>\n\n"
+                "Теперь можно добавить текстовый комментарий к адресу:",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⏩ Пропустить", callback_data="complete_with_photo_only")]
+                ]),
+                parse_mode='HTML'
+            )
+            return
     
     # Если не фото адреса, то проверяем скриншот оплаты
     await handle_payment_screenshot(update, context, photo)
 
+async def send_address_photo_to_admin(context: ContextTypes.DEFAULT_TYPE, order_id: str, order: Dict, address_photo: str):
+    """Автоматическая отправка фото адреса в группу администраторов"""
+    try:
+        caption = f"""📍 <b>ФОТО АДРЕСА ДЛЯ ДОСТАВКИ</b>
+
+🆔 ID заказа: {order_id}
+👤 Клиент: {order['username']}
+📞 Телефон: {order['phone']}
+🏠 Адрес: {order['address']}
+💰 Сумма: {order['final_total']}{CURRENCY}
+⏰ Время: {datetime.now().strftime('%H:%M:%S %d.%m.%Y')}"""
+        
+        logger.info(f"Отправка фото адреса заказа {order_id} в группу {GROUP_ID}")
+        
+        # Отправляем фото адреса в группу
+        try:
+            await context.bot.send_photo(
+                chat_id=GROUP_ID,
+                photo=address_photo,
+                caption=caption,
+                parse_mode='HTML'
+            )
+            logger.info(f"✅ Фото адреса отправлено в группу администраторов")
+            db.mark_address_photo_sent(order_id)
+        except Exception as e:
+            logger.error(f"❌ Не удалось отправить фото адреса: {e}")
+            
+            # Отправляем только текст
+            text_with_info = f"""{caption}
+
+⚠️ <i>Пользователь отправил фото адреса, но бот не может отправить его.
+Запросите фото у пользователя {order['username']} ({order['phone']})</i>"""
+            
+            await context.bot.send_message(
+                chat_id=GROUP_ID,
+                text=text_with_info,
+                parse_mode='HTML'
+            )
+    
+    except Exception as e:
+        logger.error(f"❌ Ошибка отправки фото адреса: {e}")
+
+# ==================== ОБРАБОТКА СКРИНШОТОВ ОПЛАТЫ ====================
 async def handle_payment_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE, photo):
     """Обработка скриншота оплаты"""
     user_id = update.effective_user.id
     
     logger.info(f"Получен скриншот оплаты от пользователя {user_id}")
     
-    # Получаем ID последнего заказа пользователя
     last_order_id = db.get_user_last_order(user_id)
     
     if not last_order_id:
@@ -836,7 +900,6 @@ async def handle_payment_screenshot(update: Update, context: ContextTypes.DEFAUL
         )
         return
     
-    # Отправляем подтверждение пользователю
     await update.message.reply_text(
         "✅ <b>Скриншот оплаты получен!</b>\n\n"
         f"🆔 ID заказа: {last_order_id}\n"
@@ -845,13 +908,11 @@ async def handle_payment_screenshot(update: Update, context: ContextTypes.DEFAUL
         parse_mode='HTML'
     )
     
-    # Отправляем скриншот в группу администраторов
     await send_screenshot_to_admin(update, context, photo, last_order_id, order, user_id)
 
 async def send_screenshot_to_admin(update: Update, context: ContextTypes.DEFAULT_TYPE, photo, order_id: str, order: Dict, user_id: int):
-    """Отправка скриншота в группу администраторов - ИСПРАВЛЕННАЯ ВЕРСИЯ"""
+    """Отправка скриншота в группу администраторов"""
     try:
-        # Формируем подпись
         caption = f"""📸 <b>СКРИНШОТ ОПЛАТЫ ПОЛУЧЕН</b>
 
 🆔 ID заказа: {order_id}
@@ -862,132 +923,54 @@ async def send_screenshot_to_admin(update: Update, context: ContextTypes.DEFAULT
 ⏰ Время: {datetime.now().strftime('%H:%M:%S %d.%m.%Y')}
 👤 User ID: {user_id}"""
         
-        logger.info(f"Попытка отправки скриншота в группу {GROUP_ID}...")
-        logger.info(f"File ID фото: {photo.file_id}")
+        logger.info(f"Отправка скриншота заказа {order_id} в группу {GROUP_ID}")
         
-        # СПОСОБ 1: Отправляем фото с подписью
         try:
             await context.bot.send_photo(
                 chat_id=GROUP_ID,
                 photo=photo.file_id,
                 caption=caption,
-                parse_mode='HTML'
+                parse_mode='HTML',
+                reply_markup=get_admin_order_keyboard(order_id)
             )
-            logger.info(f"✅ Способ 1: Скриншот отправлен в группу {GROUP_ID}")
+            logger.info(f"✅ Скриншот отправлен в группу администраторов")
+        except Exception as e:
+            logger.warning(f"❌ Не удалось отправить фото: {e}")
             
-            # Отмечаем, что скриншот отправлен
-            db.mark_screenshot_sent(order_id)
-            
-            await update.message.reply_text(
-                "📤 <b>Скриншот успешно передан администратору!</b>\n\n"
-                "Ваш заказ поставлен в очередь на обработку.",
-                parse_mode='HTML'
-            )
-            
-            return  # Успешно, выходим
-            
-        except Exception as e1:
-            logger.warning(f"❌ Способ 1 не сработал: {e1}")
-            
-            # СПОСОБ 2: Отправляем только фото, затем текст отдельно
             try:
-                # Сначала отправляем фото
-                await context.bot.send_photo(
+                await context.bot.send_photo(chat_id=GROUP_ID, photo=photo.file_id)
+                await context.bot.send_message(
                     chat_id=GROUP_ID,
-                    photo=photo.file_id
+                    text=caption,
+                    parse_mode='HTML',
+                    reply_markup=get_admin_order_keyboard(order_id)
                 )
-                
-                # Затем отправляем текст с кнопками
-                text_with_buttons = f"""{caption}
+                logger.info(f"✅ Фото и текст отправлены раздельно")
+            except Exception as e2:
+                logger.warning(f"❌ Не удалось отправить фото: {e2}")
+                text_with_info = f"""{caption}
 
-📋 <b>Заказ:</b>"""
-                
-                for item_id, item in order['cart'].items():
-                    item_total = item['price'] * item['quantity']
-                    text_with_buttons += f"\n• {item['name']} x{item['quantity']} - {item_total}{CURRENCY}"
-                
-                text_with_buttons += f"\n\n💰 Итого: {order['total']}{CURRENCY}"
-                text_with_buttons += f"\n🚚 Доставка: {DELIVERY_COST}{CURRENCY}"
-                text_with_buttons += f"\n💵 К оплате: {order['final_total']}{CURRENCY}"
+⚠️ <i>Пользователь отправил скриншот оплаты, но бот не может отправить фото.</i>"""
                 
                 await context.bot.send_message(
                     chat_id=GROUP_ID,
-                    text=text_with_buttons,
-                    reply_markup=get_admin_order_keyboard(order_id),
-                    parse_mode='HTML'
+                    text=text_with_info,
+                    parse_mode='HTML',
+                    reply_markup=get_admin_order_keyboard(order_id)
                 )
-                
-                logger.info(f"✅ Способ 2: Фото и текст отправлены раздельно")
-                
-                # Отмечаем, что скриншот отправлен
-                db.mark_screenshot_sent(order_id)
-                
-                await update.message.reply_text(
-                    "📤 <b>Скриншот успешно передан администратору!</b>\n\n"
-                    "Ваш заказ поставлен в очередь на обработку.",
-                    parse_mode='HTML'
-                )
-                
-                return  # Успешно, выходим
-                
-            except Exception as e2:
-                logger.warning(f"❌ Способ 2 не сработал: {e2}")
-                
-                # СПОСОБ 3: Только текст (резервный вариант)
-                try:
-                    text_with_info = f"""{caption}
-
-📋 <b>Заказ:</b>"""
-                    
-                    for item_id, item in order['cart'].items():
-                        item_total = item['price'] * item['quantity']
-                        text_with_info += f"\n• {item['name']} x{item['quantity']} - {item_total}{CURRENCY}"
-                    
-                    text_with_info += f"\n\n💰 Итого: {order['total']}{CURRENCY}"
-                    text_with_info += f"\n🚚 Доставка: {DELIVERY_COST}{CURRENCY}"
-                    text_with_info += f"\n💵 К оплате: {order['final_total']}{CURRENCY}"
-                    text_with_info += f"\n\n⚠️ <i>Пользователь отправил скриншот оплаты.</i>"
-                    text_with_info += f"\n<i>Попросите прислать скриншот вручную: {order['phone']}</i>"
-                    
-                    await context.bot.send_message(
-                        chat_id=GROUP_ID,
-                        text=text_with_info,
-                        reply_markup=get_admin_order_keyboard(order_id),
-                        parse_mode='HTML'
-                    )
-                    
-                    logger.info(f"✅ Способ 3: Только текст отправлен")
-                    
-                    # Отмечаем, что скриншот отправлен
-                    db.mark_screenshot_sent(order_id)
-                    
-                    await update.message.reply_text(
-                        "📤 <b>Скриншот успешно передан администратору!</b>\n\n"
-                        "✅ <i>Информация о заказе отправлена администратору.</i>\n"
-                        "📸 <i>Если потребуется, администратор запросит скриншот отдельно.</i>",
-                        parse_mode='HTML'
-                    )
-                    
-                    return  # Успешно, выходим
-                    
-                except Exception as e3:
-                    logger.error(f"❌ Способ 3 не сработал: {e3}")
-                    raise e3  # Передаем ошибку дальше
+                logger.info(f"✅ Текстовая информация отправлена")
+        
+        db.mark_screenshot_sent(order_id)
+        
+        await update.message.reply_text(
+            "📤 <b>Скриншот успешно передан администратору!</b>\n\n"
+            "Ваш заказ поставлен в очередь на обработку.",
+            parse_mode='HTML'
+        )
         
     except Exception as e:
-        logger.error(f"❌ Критическая ошибка при отправке скриншота: {e}")
-        logger.error(f"Тип ошибки: {type(e).__name__}")
-        logger.error(f"GROUP_ID: {GROUP_ID}")
+        logger.error(f"❌ Ошибка отправки скриншота: {e}")
         
-        # Подробная диагностика
-        if "Chat not found" in str(e):
-            logger.error("❌ ОШИБКА: Чат не найден! Проверьте GROUP_ID")
-        elif "Forbidden" in str(e):
-            logger.error("❌ ОШИБКА: Бот не добавлен в группу или не имеет прав администратора!")
-        elif "Bad Request" in str(e):
-            logger.error("❌ ОШИБКА: Неверный формат GROUP_ID!")
-        
-        # Сохраняем информацию об ошибке
         error_msg = f"""❌ ОШИБКА ОТПРАВКИ СКРИНШОТА
 Время: {datetime.now().strftime('%H:%M:%S %d.%m.%Y')}
 Группа: {GROUP_ID}
@@ -1000,42 +983,32 @@ async def send_screenshot_to_admin(update: Update, context: ContextTypes.DEFAULT
         with open('screenshot_errors.log', 'a', encoding='utf-8') as f:
             f.write(f"\n{error_msg}\n")
         
-        # Сообщаем пользователю более понятную ошибку
-        error_message = "⚠️ <b>Не удалось отправить скриншот в группу администраторов!</b>\n\n"
-        
-        if "Chat not found" in str(e):
-            error_message += "❌ <i>Группа администраторов не найдена.</i>\n"
-            error_message += "💡 <i>Проверьте настройки бота.</i>\n"
-        elif "Forbidden" in str(e):
-            error_message += "❌ <i>Бот не имеет доступа к группе.</i>\n"
-            error_message += "💡 <i>Добавьте бота в группу и дайте права администратора.</i>\n"
-        else:
-            error_message += "❌ <i>Техническая ошибка.</i>\n"
-        
-        error_message += f"\n📞 <b>Пожалуйста, отправьте скриншот напрямую администратору по телефону:</b>\n"
-        error_message += f"<b>010-8361-6165</b>\n\n"
-        error_message += f"📋 <b>Информация для администратора:</b>\n"
-        error_message += f"🆔 ID заказа: {order_id}\n"
-        error_message += f"👤 Клиент: {order['username']}\n"
-        error_message += f"📞 Телефон: {order['phone']}\n"
-        error_message += f"💰 Сумма: {order['final_total']}{CURRENCY}"
+        error_message = f"""⚠️ <b>Не удалось отправить скриншот в группу администраторов!</b>
+
+📞 <b>Пожалуйста, отправьте скриншот напрямую администратору по телефону:</b>
+<b>010-8361-6165</b>
+
+📋 <b>Информация для администратора:</b>
+🆔 ID заказа: {order_id}
+👤 Клиент: {order['username']}
+📞 Телефон: {order['phone']}
+💰 Сумма: {order['final_total']}{CURRENCY}"""
         
         await update.message.reply_text(
             error_message,
             parse_mode='HTML'
         )
 
+# ==================== ОБРАБОТКА ТЕКСТОВЫХ СООБЩЕНИЙ ====================
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка текстовых сообщений"""
     user_id = update.effective_user.id
     text = update.message.text.strip()
     
-    # Проверяем, находится ли пользователь в процессе оформления заказа
     if 'checkout_step' in context.user_data:
         step = context.user_data['checkout_step']
         
         if step == 'phone':
-            # Валидация телефона (корейский формат)
             phone_pattern = r'^01[016789][0-9]{7,8}$'
             clean_phone = re.sub(r'\D', '', text)
             
@@ -1067,7 +1040,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         
         elif step == 'address_text':
-            # Пользователь вводит адрес текстом
             if len(text) < 10:
                 await update.message.reply_text(
                     "❌ <b>Адрес слишком короткий!</b>\n\n"
@@ -1079,7 +1051,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data['address'] = text
             context.user_data['checkout_step'] = 'confirmation'
             
-            # Получаем все данные для создания заказа
             username = context.user_data['username']
             phone = context.user_data['phone']
             address = text
@@ -1089,15 +1060,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("❌ Корзина пуста!")
                 return
             
-            # Создаем заказ
             order_id = db.create_order(user_id, username, phone, address, cart)
             order = db.get_order(order_id)
             
-            # Отправляем подтверждение пользователю
             await complete_order_creation(None, context, order_id, order, update)
         
-        elif step == 'address_confirmation':
-            # Пользователь добавляет текстовый адрес к фото
+        elif step == 'add_text_to_photo':
             if len(text) < 5:
                 await update.message.reply_text(
                     "❌ <b>Комментарий слишком короткий!</b>\n\n"
@@ -1109,7 +1077,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data['address'] = text
             context.user_data['checkout_step'] = 'confirmation'
             
-            # Получаем все данные для создания заказа
             username = context.user_data['username']
             phone = context.user_data['phone']
             address = text
@@ -1120,23 +1087,24 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("❌ Корзина пуста!")
                 return
             
-            # Создаем заказ
             order_id = db.create_order(user_id, username, phone, address, cart, address_photo)
             order = db.get_order(order_id)
             
-            # Отправляем подтверждение пользователю
+            # ОТПРАВЛЯЕМ ФОТО АДРЕСА В ГРУППУ АДМИНИСТРАТОРОВ
+            if address_photo:
+                await send_address_photo_to_admin(context, order_id, order, address_photo)
+            
             await complete_order_creation(None, context, order_id, order, update)
     
     else:
-        # Обычное сообщение
         await update.message.reply_text(
             "Используйте меню для навигации или команду /start",
             reply_markup=get_main_menu_keyboard()
         )
 
+# ==================== СОЗДАНИЕ И ОТПРАВКА ЗАКАЗА ====================
 async def complete_order_creation(query, context, order_id, order, update=None):
     """Завершение создания заказа и отправка подтверждения"""
-    # Формируем текст заказа
     order_text = f"""✅ <b>Заказ оформлен!</b>
 
 📋 <b>Ваш заказ:</b>"""
@@ -1151,7 +1119,6 @@ async def complete_order_creation(query, context, order_id, order, update=None):
     order_text += f"\n🆔 <b>ID заказа: {order_id}</b>"
     order_text += f"\n🏠 <b>Адрес: {order['address'][:50]}{'...' if len(order['address']) > 50 else ''}</b>"
     
-    # Реквизиты для оплаты
     payment_text = f"""💳 <b>Реквизиты для оплаты:</b>
 
 🏦 Банк: <b>전북은행 (JEONBUK BANK)</b>
@@ -1194,7 +1161,6 @@ async def complete_order_creation(query, context, order_id, order, update=None):
 async def send_order_to_admin(context: ContextTypes.DEFAULT_TYPE, order_id: str, order: Dict):
     """Отправка заказа администратору"""
     try:
-        # Формируем сообщение для админа
         admin_text = f"""🆕 <b>НОВЫЙ ЗАКАЗ ЧЕРЕЗ БОТА</b>
 
 👤 Клиент: {order['username']}
@@ -1217,54 +1183,29 @@ async def send_order_to_admin(context: ContextTypes.DEFAULT_TYPE, order_id: str,
         
         logger.info(f"Отправка заказа {order_id} в группу {GROUP_ID}")
         
-        # Если есть фото адреса, отправляем его
-        if order.get('address_photo'):
-            try:
-                await context.bot.send_photo(
-                    chat_id=GROUP_ID,
-                    photo=order['address_photo'],
-                    caption=admin_text,
-                    reply_markup=get_admin_order_keyboard(order_id),
-                    parse_mode='HTML'
-                )
-                db.mark_address_photo_sent(order_id)
-                logger.info(f"✅ Заказ {order_id} с фото адреса отправлен админу")
-            except Exception as e:
-                logger.error(f"❌ Не удалось отправить фото адреса: {e}")
-                # Отправляем только текст
-                admin_text += f"\n\n⚠️ <i>Пользователь отправил фото адреса, но бот не может отправить его. Запросите фото у пользователя.</i>"
-                await context.bot.send_message(
-                    chat_id=GROUP_ID,
-                    text=admin_text,
-                    reply_markup=get_admin_order_keyboard(order_id),
-                    parse_mode='HTML'
-                )
-        else:
-            # Отправляем только текст
-            await context.bot.send_message(
-                chat_id=GROUP_ID,
-                text=admin_text,
-                reply_markup=get_admin_order_keyboard(order_id),
-                parse_mode='HTML'
-            )
+        # Отправляем только текст с кнопками
+        await context.bot.send_message(
+            chat_id=GROUP_ID,
+            text=admin_text,
+            reply_markup=get_admin_order_keyboard(order_id),
+            parse_mode='HTML'
+        )
         
         logger.info(f"✅ Заказ {order_id} отправлен админу")
         
-        # Записываем в лог файл на всякий случай
         with open('orders.log', 'a', encoding='utf-8') as f:
             f.write(f"\n{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Заказ {order_id}\n{admin_text}\n")
         
     except Exception as e:
         logger.error(f"❌ Ошибка отправки админу: {e}")
         
-        # Сохраняем в лог файл
         with open('failed_orders.log', 'a', encoding='utf-8') as f:
             f.write(f"\n{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Ошибка отправки заказа {order_id}\n")
             f.write(f"Ошибка: {str(e)}\n")
 
+# ==================== ДЕЙСТВИЯ АДМИНИСТРАТОРА ====================
 async def handle_admin_action(query, data, context):
     """Обработка действий администратора"""
-    # Проверяем, что сообщение из группы администраторов
     try:
         current_chat_id = str(query.message.chat.id)
         group_id_str = str(GROUP_ID).replace('-', '').lstrip('-')
@@ -1292,25 +1233,29 @@ async def handle_admin_action(query, data, context):
         # Подтверждение оплаты
         db.update_order_status(order_id, 'preparing', 'confirmed')
         
-        # Отправляем уведомление пользователю
+        # ОТПРАВЛЯЕМ УВЕДОМЛЕНИЕ КЛИЕНТУ О ТОМ, ЧТО ЗАКАЗ ВЫПОЛНЯЕТСЯ
         try:
             await context.bot.send_message(
                 chat_id=order['user_id'],
                 text=f"""🎉 <b>Оплата подтверждена!</b>
 
-✅ <b>Ваш заказ подтвержден!</b>
-🆔 ID заказа: {order_id}
+✅ <b>Ваш заказ №{order_id} принят в работу!</b>
 💰 Сумма: {order['final_total']}{CURRENCY}
-👨‍🍳 Заказ готовится! Ожидайте доставки в течение 30-45 минут.
-⏰ Время подтверждения: {datetime.now().strftime('%H:%M:%S %d.%m.%Y')}""",
+👨‍🍳 <b>Заказ готовится! Ожидайте доставки в течение 30-45 минут.</b>
+🚚 Курьер выедет к вам по адресу: {order['address'][:50]}{'...' if len(order['address']) > 50 else ''}
+📞 Контактный телефон курьера: <b>010-8361-6165</b>
+⏰ Время подтверждения: {datetime.now().strftime('%H:%M:%S %d.%m.%Y')}
+
+<i>Спасибо за заказ! Приятного аппетита! 😊</i>""",
                 parse_mode='HTML'
             )
+            logger.info(f"✅ Уведомление о начале выполнения заказа отправлено клиенту {order['user_id']}")
         except Exception as e:
-            logger.error(f"Не удалось отправить уведомление пользователю: {e}")
+            logger.error(f"❌ Не удалось отправить уведомление пользователю: {e}")
         
         # Обновляем сообщение в группе
         original_text = query.message.text_html if hasattr(query.message, 'text_html') else query.message.text
-        confirmed_text = f"{original_text}\n\n✅ <b>ОПЛАТА ПОДТВЕРЖДЕНА АДМИНИСТРАТОРОМ</b>"
+        confirmed_text = f"{original_text}\n\n✅ <b>ОПЛАТА ПОДТВЕРЖДЕНА АДМИНИСТРАТОРОМ</b>\n⏰ <i>Клиент уведомлен о начале выполнения заказа</i>"
         
         await query.edit_message_text(
             confirmed_text,
@@ -1348,38 +1293,14 @@ async def handle_admin_action(query, data, context):
 def main():
     """Основная функция запуска бота"""
     
-    # ========== ЗАЩИТА ОТ МНОГОКРАТНОГО ЗАПУСКА ==========
-    lock_file = Path("bot.lock")
-    
-    try:
-        # Пытаемся создать lock файл
-        lock_fd = os.open(lock_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        # Пишем в lock файл PID процесса
-        os.write(lock_fd, str(os.getpid()).encode())
-        os.close(lock_fd)
-    except OSError:
-        print("❌ Бот уже запущен!")
-        print("💡 Проверьте запущенные процессы и завершите дубликаты:")
-        print("   pkill -f python  # завершит все процессы Python")
-        print("   Или проверьте: ps aux | grep python")
-        sys.exit(1)
-    
-    def cleanup():
-        """Очистка lock файла при завершении"""
-        try:
-            lock_file.unlink()
-        except:
-            pass
-    
-    # Регистрируем очистку при завершении
-    import atexit
-    atexit.register(cleanup)
-    # ====================================================
+    # Проверка на один экземпляр
+    lock_socket = check_single_instance()
     
     if not BOT_TOKEN or BOT_TOKEN == 'ВАШ_ТОКЕН_БОТА':
         logger.error("❌ Ошибка: BOT_TOKEN не установлен!")
         logger.error("💡 Установите переменную окружения BOT_TOKEN")
-        cleanup()
+        if lock_socket:
+            lock_socket.close()
         return
     
     # Проверяем GROUP_ID
@@ -1403,9 +1324,22 @@ def main():
     logger.info(f"🚚 Доставка по {DELIVERY_AREA}: {DELIVERY_COST}{CURRENCY}")
     logger.info(f"📞 Телефон: 010-8361-6165")
     logger.info(f"👥 Группа админов: {GROUP_ID}")
-    logger.info(f"✅ Для тестирования создайте файл .env с переменной GROUP_ID='-ваш_ид_группы'")
     
-    application.run_polling()
+    try:
+        application.run_polling(allowed_updates=Update.ALL_TYPES)
+    except KeyboardInterrupt:
+        logger.info("👋 Бот завершает работу по команде пользователя")
+    except Exception as e:
+        logger.error(f"❌ Ошибка при работе бота: {e}")
+    finally:
+        if lock_socket:
+            lock_socket.close()
+            logger.info("🔓 Блокировка снята")
 
 if __name__ == "__main__":
+    # Остановить все предыдущие процессы перед запуском
+    import subprocess
+    subprocess.run(['pkill', '-f', 'python'], capture_output=True)
+    
+    # Запуск бота
     main()
