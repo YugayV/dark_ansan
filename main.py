@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 DARK KITCHEN ANSAN - Telegram Bot
-Версия 2.3 - Исправлены уведомления администраторам и сохранение кнопок
+Версия 2.4 - Исправлены уведомления клиентам при подтверждении/отклонении заказа
 """
 
 import os
@@ -165,7 +165,8 @@ class Database:
             'created_at': time.time(),
             'payment_status': 'pending',
             'screenshot_sent': False,
-            'address_photo_sent': False
+            'address_photo_sent': False,
+            'admin_notified': False
         }
         
         # Сохраняем ID последнего заказа и данные пользователя
@@ -1262,18 +1263,21 @@ async def send_order_to_admin(context: ContextTypes.DEFAULT_TYPE, order_id: str,
 async def handle_admin_action(query, data, context):
     """Обработка действий администратора"""
     try:
+        # Проверяем, что команда выполняется в группе администраторов
         current_chat_id = str(query.message.chat.id)
         group_id_str = str(GROUP_ID).replace('-', '').lstrip('-')
         
         if current_chat_id != group_id_str:
             await query.answer("Эта команда доступна только администраторам", show_alert=True)
             return
-    except:
+    except Exception as e:
+        logger.error(f"Ошибка проверки прав доступа: {e}")
         await query.answer("Ошибка проверки прав доступа", show_alert=True)
         return
     
     parts = data.split('_')
     if len(parts) < 3:
+        logger.error(f"Неверный формат callback_data: {data}")
         return
     
     action = parts[1]
@@ -1282,17 +1286,18 @@ async def handle_admin_action(query, data, context):
     order = db.get_order(order_id)
     if not order:
         await query.edit_message_text(f"❌ Заказ {order_id} не найден")
+        await query.answer(f"Заказ {order_id} не найден", show_alert=True)
         return
     
     if action == 'confirm':
         # Подтверждение оплаты
         db.update_order_status(order_id, 'preparing', 'confirmed')
         
-        # Уведомление клиента
+        # Уведомление клиента - УЛУЧШЕННАЯ ВЕРСИЯ
+        client_notification_sent = False
         try:
-            await context.bot.send_message(
-                chat_id=order['user_id'],
-                text=f"""🎉 <b>Оплата подтверждена!</b>
+            # Формируем сообщение для клиента
+            client_message = f"""🎉 <b>ОПЛАТА ПОДТВЕРЖДЕНА!</b>
 
 ✅ <b>Ваш заказ №{order_id} принят в работу!</b>
 💰 Сумма: {order['final_total']}{CURRENCY}
@@ -1301,56 +1306,168 @@ async def handle_admin_action(query, data, context):
 📞 Контактный телефон курьера: <b>010-8361-6165</b>
 ⏰ Время подтверждения: {datetime.now().strftime('%H:%M:%S %d.%m.%Y')}
 
-<i>Спасибо за заказ! Приятного аппетита! 😊</i>""",
+<i>Спасибо за заказ! Приятного аппетита! 😊</i>"""
+            
+            # Отправляем уведомление клиенту
+            await context.bot.send_message(
+                chat_id=order['user_id'],
+                text=client_message,
                 parse_mode='HTML'
             )
-            logger.info(f"✅ Уведомление о начале выполнения заказа отправлено клиенту {order['user_id']}")
+            client_notification_sent = True
+            logger.info(f"✅ Уведомление о подтверждении отправлено клиенту {order['user_id']} (заказ {order_id})")
+            
+            # Также отправляем подтверждение в чат
+            await query.answer("✅ Оплата подтверждена! Клиент уведомлен.", show_alert=True)
+            
         except Exception as e:
-            logger.error(f"❌ Не удалось отправить уведомление пользователю: {e}")
+            logger.error(f"❌ Не удалось отправить уведомление пользователю {order['user_id']}: {e}")
+            error_msg = f"⚠️ Не удалось уведомить клиента! Заказ подтвержден, но клиент не получил уведомление.\n\nПричина: {str(e)[:100]}"
+            await query.answer(error_msg, show_alert=True)
         
-        # Обновляем сообщение в группе
+        # Обновляем сообщение в группе администраторов
         original_text = query.message.text
-        confirmed_text = f"{original_text}\n\n✅ <b>ОПЛАТА ПОДТВЕРЖДЕНА АДМИНИСТРАТОРОМ</b>\n⏰ <i>Клиент уведомлен о начале выполнения заказа</i>\n🕐 {datetime.now().strftime('%H:%M:%S %d.%m.%Y')}"
+        confirmation_time = datetime.now().strftime('%H:%M:%S %d.%m.%Y')
         
-        await query.edit_message_text(
-            confirmed_text,
-            reply_markup=get_admin_order_keyboard(order_id, 'confirmed'),
-            parse_mode='HTML'
-        )
+        if client_notification_sent:
+            confirmed_text = f"{original_text}\n\n✅ <b>ОПЛАТА ПОДТВЕРЖДЕНА</b>\n👤 Клиент уведомлен ✅\n⏰ {confirmation_time}"
+        else:
+            confirmed_text = f"{original_text}\n\n✅ <b>ОПЛАТА ПОДТВЕРЖДЕНА</b>\n⚠️ Клиент НЕ уведомлен\n⏰ {confirmation_time}"
+        
+        try:
+            await query.edit_message_text(
+                confirmed_text,
+                reply_markup=get_admin_order_keyboard(order_id, 'confirmed'),
+                parse_mode='HTML'
+            )
+        except Exception as e:
+            logger.error(f"Не удалось обновить сообщение: {e}")
+            # Пробуем отправить новое сообщение
+            try:
+                await context.bot.send_message(
+                    chat_id=GROUP_ID,
+                    text=f"✅ Оплата заказа {order_id} подтверждена\n👤 Клиент: {order['username']}\n⏰ {confirmation_time}",
+                    parse_mode='HTML'
+                )
+            except:
+                pass
         
         # Уведомление администратору в личный чат
         await send_admin_notification(context, query.from_user.id, order_id, 'confirm')
+        
+        # Логируем действие
+        logger.info(f"Админ {query.from_user.id} подтвердил оплату заказа {order_id}")
     
     elif action == 'reject':
         # Отклонение оплаты
         db.update_order_status(order_id, 'payment_rejected', 'rejected')
         
-        # Уведомление клиента
+        # Уведомление клиента - УЛУЧШЕННАЯ ВЕРСИЯ
+        client_notification_sent = False
         try:
-            await context.bot.send_message(
-                chat_id=order['user_id'],
-                text=f"""❌ <b>Платеж не подтвержден</b>
+            # Формируем сообщение для клиента
+            client_message = f"""❌ <b>ПЛАТЕЖ НЕ ПОДТВЕРЖДЕН</b>
 
 🆔 ID заказа: {order_id}
 💰 Сумма: {order['final_total']}{CURRENCY}
-📞 Пожалуйста, свяжитесь с нами по телефону: <b>010-8361-6165</b>""",
+📞 Пожалуйста, свяжитесь с нами по телефону: <b>010-8361-6165</b>
+⏰ Время: {datetime.now().strftime('%H:%M:%S %d.%m.%Y')}
+
+<i>Возможные причины:
+1. Неверная сумма оплаты
+2. Не указан ID заказа
+3. Скриншот нечитаемый
+4. Оплата не прошла</i>"""
+            
+            # Отправляем уведомление клиенту
+            await context.bot.send_message(
+                chat_id=order['user_id'],
+                text=client_message,
                 parse_mode='HTML'
             )
+            client_notification_sent = True
+            logger.info(f"✅ Уведомление об отклонении отправлено клиенту {order['user_id']} (заказ {order_id})")
+            
+            # Также отправляем подтверждение в чат
+            await query.answer("❌ Платеж отклонен! Клиент уведомлен.", show_alert=True)
+            
         except Exception as e:
-            logger.error(f"Не удалось отправить уведомление пользователю: {e}")
+            logger.error(f"❌ Не удалось отправить уведомление пользователю {order['user_id']}: {e}")
+            error_msg = f"⚠️ Не удалось уведомить клиента! Платеж отклонен, но клиент не получил уведомление.\n\nПричина: {str(e)[:100]}"
+            await query.answer(error_msg, show_alert=True)
         
         # Обновляем сообщение в группе
         original_text = query.message.text
-        rejected_text = f"{original_text}\n\n❌ <b>ОПЛАТА ОТКЛОНЕНА АДМИНИСТРАТОРОМ</b>\n⏰ {datetime.now().strftime('%H:%M:%S %d.%m.%Y')}"
+        rejection_time = datetime.now().strftime('%H:%M:%S %d.%m.%Y')
         
-        await query.edit_message_text(
-            rejected_text,
-            reply_markup=get_admin_order_keyboard(order_id, 'rejected'),
-            parse_mode='HTML'
-        )
+        if client_notification_sent:
+            rejected_text = f"{original_text}\n\n❌ <b>ОПЛАТА ОТКЛОНЕНА</b>\n👤 Клиент уведомлен ✅\n⏰ {rejection_time}"
+        else:
+            rejected_text = f"{original_text}\n\n❌ <b>ОПЛАТА ОТКЛОНЕНА</b>\n⚠️ Клиент НЕ уведомлен\n⏰ {rejection_time}"
+        
+        try:
+            await query.edit_message_text(
+                rejected_text,
+                reply_markup=get_admin_order_keyboard(order_id, 'rejected'),
+                parse_mode='HTML'
+            )
+        except Exception as e:
+            logger.error(f"Не удалось обновить сообщение: {e}")
+            # Пробуем отправить новое сообщение
+            try:
+                await context.bot.send_message(
+                    chat_id=GROUP_ID,
+                    text=f"❌ Оплата заказа {order_id} отклонена\n👤 Клиент: {order['username']}\n⏰ {rejection_time}",
+                    parse_mode='HTML'
+                )
+            except:
+                pass
         
         # Уведомление администратору в личный чат
         await send_admin_notification(context, query.from_user.id, order_id, 'reject')
+        
+        # Логируем действие
+        logger.info(f"Админ {query.from_user.id} отклонил оплату заказа {order_id}")
+    
+    else:
+        logger.warning(f"Неизвестное действие администратора: {action}")
+        await query.answer(f"Неизвестное действие: {action}", show_alert=True)
+
+# ==================== КОМАНДА ДЛЯ ТЕСТИРОВАНИЯ УВЕДОМЛЕНИЙ ====================
+async def test_notify_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Тестовая команда для проверки уведомлений (только для админов)"""
+    user_id = update.effective_user.id
+    chat_id = str(update.effective_chat.id)
+    group_id_str = str(GROUP_ID).replace('-', '').lstrip('-')
+    
+    # Проверяем, что команда выполняется в группе администраторов
+    if chat_id != group_id_str:
+        await update.message.reply_text("❌ Эта команда доступна только в группе администраторов")
+        return
+    
+    try:
+        # Получаем последний заказ
+        if db.orders:
+            last_order_id = list(db.orders.keys())[-1]
+            order = db.get_order(last_order_id)
+            
+            if order:
+                # Пробуем отправить тестовое сообщение клиенту
+                try:
+                    await context.bot.send_message(
+                        chat_id=order['user_id'],
+                        text="🔔 <b>ТЕСТОВОЕ УВЕДОМЛЕНИЕ</b>\n\nЭто тестовое сообщение от администратора для проверки связи.",
+                        parse_mode='HTML'
+                    )
+                    await update.message.reply_text(f"✅ Тестовое уведомление отправлено клиенту {order['username']} (ID: {order['user_id']})")
+                except Exception as e:
+                    await update.message.reply_text(f"❌ Ошибка отправки клиенту: {str(e)}")
+            else:
+                await update.message.reply_text("❌ Заказ не найден")
+        else:
+            await update.message.reply_text("❌ Нет заказов для теста")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
 # ==================== ЗАПУСК БОТА ====================
 def main():
@@ -1376,6 +1493,7 @@ def main():
     
     # Регистрируем обработчики
     application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("test_notify", test_notify_command))  # Тестовая команда
     application.add_handler(CallbackQueryHandler(handle_callback))
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
