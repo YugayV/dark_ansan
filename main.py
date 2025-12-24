@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 DARK KITCHEN ANSAN - Telegram Bot
-Версия 2.2 - Исправлены ошибки запуска
+Версия 2.3 - Исправлены уведомления администраторам и сохранение кнопок
 """
 
 import os
@@ -289,14 +289,29 @@ def get_back_keyboard(back_to: str = "main_menu"):
     keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=back_to)]]
     return InlineKeyboardMarkup(keyboard)
 
-def get_admin_order_keyboard(order_id: str):
-    """Клавиатура для администратора"""
-    keyboard = [
-        [
-            InlineKeyboardButton("✅ Подтвердить оплату", callback_data=f"admin_confirm_{order_id}"),
-            InlineKeyboardButton("❌ Отклонить платеж", callback_data=f"admin_reject_{order_id}")
+def get_admin_order_keyboard(order_id: str, status: str = 'pending'):
+    """Клавиатура для администратора с учетом статуса"""
+    if status == 'confirmed':
+        keyboard = [
+            [
+                InlineKeyboardButton("✅ ОПЛАТА ПОДТВЕРЖДЕНА", callback_data="noop"),
+                InlineKeyboardButton("👨‍🍳 ЗАКАЗ ГОТОВИТСЯ", callback_data="noop")
+            ]
         ]
-    ]
+    elif status == 'rejected':
+        keyboard = [
+            [
+                InlineKeyboardButton("❌ ОПЛАТА ОТКЛОНЕНА", callback_data="noop"),
+                InlineKeyboardButton("📞 СВЯЗАТЬСЯ С КЛИЕНТОМ", callback_data="noop")
+            ]
+        ]
+    else:
+        keyboard = [
+            [
+                InlineKeyboardButton("✅ Подтвердить оплату", callback_data=f"admin_confirm_{order_id}"),
+                InlineKeyboardButton("❌ Отклонить платеж", callback_data=f"admin_reject_{order_id}")
+            ]
+        ]
     return InlineKeyboardMarkup(keyboard)
 
 # ==================== ЗАЩИТА ОТ МНОГОКРАТНОГО ЗАПУСКА ====================
@@ -311,6 +326,46 @@ def check_single_instance():
         logger.error("❌ Бот уже запущен в другом процессе!")
         logger.error("💡 Завершите предыдущий процесс и запустите снова")
         sys.exit(1)
+
+# ==================== УВЕДОМЛЕНИЯ АДМИНИСТРАТОРАМ ====================
+async def send_admin_notification(context: ContextTypes.DEFAULT_TYPE, admin_user_id: int, order_id: str, action: str):
+    """Отправка уведомления администратору в личный чат"""
+    try:
+        order = db.get_order(order_id)
+        if not order:
+            return
+        
+        if action == 'confirm':
+            message = f"""✅ <b>Вы подтвердили оплату для заказа {order_id}</b>
+
+👤 Клиент: {order['username']}
+📞 Телефон: {order['phone']}
+💰 Сумма: {order['final_total']}{CURRENCY}
+🏠 Адрес: {order['address'][:100]}{'...' if len(order['address']) > 100 else ''}
+⏰ Время: {datetime.now().strftime('%H:%M:%S %d.%m.%Y')}
+
+✅ <i>Клиент уведомлен о начале приготовления заказа.</i>"""
+        
+        elif action == 'reject':
+            message = f"""❌ <b>Вы отклонили оплату для заказа {order_id}</b>
+
+👤 Клиент: {order['username']}
+📞 Телефон: {order['phone']}
+💰 Сумма: {order['final_total']}{CURRENCY}
+🏠 Адрес: {order['address'][:100]}{'...' if len(order['address']) > 100 else ''}
+⏰ Время: {datetime.now().strftime('%H:%M:%S %d.%m.%Y')}
+
+⚠️ <i>Клиент уведомлен об отклонении платежа.</i>"""
+        
+        await context.bot.send_message(
+            chat_id=admin_user_id,
+            text=message,
+            parse_mode='HTML'
+        )
+        logger.info(f"✅ Уведомление отправлено администратору {admin_user_id}")
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка отправки уведомления администратору: {e}")
 
 # ==================== ОБРАБОТЧИКИ ====================
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -931,7 +986,7 @@ async def send_screenshot_to_admin(update: Update, context: ContextTypes.DEFAULT
                 photo=photo.file_id,
                 caption=caption,
                 parse_mode='HTML',
-                reply_markup=get_admin_order_keyboard(order_id)
+                reply_markup=get_admin_order_keyboard(order_id, 'pending')
             )
             logger.info(f"✅ Скриншот отправлен в группу администраторов")
         except Exception as e:
@@ -943,7 +998,7 @@ async def send_screenshot_to_admin(update: Update, context: ContextTypes.DEFAULT
                     chat_id=GROUP_ID,
                     text=caption,
                     parse_mode='HTML',
-                    reply_markup=get_admin_order_keyboard(order_id)
+                    reply_markup=get_admin_order_keyboard(order_id, 'pending')
                 )
                 logger.info(f"✅ Фото и текст отправлены раздельно")
             except Exception as e2:
@@ -956,7 +1011,7 @@ async def send_screenshot_to_admin(update: Update, context: ContextTypes.DEFAULT
                     chat_id=GROUP_ID,
                     text=text_with_info,
                     parse_mode='HTML',
-                    reply_markup=get_admin_order_keyboard(order_id)
+                    reply_markup=get_admin_order_keyboard(order_id, 'pending')
                 )
                 logger.info(f"✅ Текстовая информация отправлена")
         
@@ -1187,7 +1242,7 @@ async def send_order_to_admin(context: ContextTypes.DEFAULT_TYPE, order_id: str,
         await context.bot.send_message(
             chat_id=GROUP_ID,
             text=admin_text,
-            reply_markup=get_admin_order_keyboard(order_id),
+            reply_markup=get_admin_order_keyboard(order_id, 'pending'),
             parse_mode='HTML'
         )
         
@@ -1233,7 +1288,7 @@ async def handle_admin_action(query, data, context):
         # Подтверждение оплаты
         db.update_order_status(order_id, 'preparing', 'confirmed')
         
-        # ОТПРАВЛЯЕМ УВЕДОМЛЕНИЕ КЛИЕНТУ О ТОМ, ЧТО ЗАКАЗ ВЫПОЛНЯЕТСЯ
+        # Уведомление клиента
         try:
             await context.bot.send_message(
                 chat_id=order['user_id'],
@@ -1254,19 +1309,23 @@ async def handle_admin_action(query, data, context):
             logger.error(f"❌ Не удалось отправить уведомление пользователю: {e}")
         
         # Обновляем сообщение в группе
-        original_text = query.message.text_html if hasattr(query.message, 'text_html') else query.message.text
-        confirmed_text = f"{original_text}\n\n✅ <b>ОПЛАТА ПОДТВЕРЖДЕНА АДМИНИСТРАТОРОМ</b>\n⏰ <i>Клиент уведомлен о начале выполнения заказа</i>"
+        original_text = query.message.text
+        confirmed_text = f"{original_text}\n\n✅ <b>ОПЛАТА ПОДТВЕРЖДЕНА АДМИНИСТРАТОРОМ</b>\n⏰ <i>Клиент уведомлен о начале выполнения заказа</i>\n🕐 {datetime.now().strftime('%H:%M:%S %d.%m.%Y')}"
         
         await query.edit_message_text(
             confirmed_text,
+            reply_markup=get_admin_order_keyboard(order_id, 'confirmed'),
             parse_mode='HTML'
         )
+        
+        # Уведомление администратору в личный чат
+        await send_admin_notification(context, query.from_user.id, order_id, 'confirm')
     
     elif action == 'reject':
         # Отклонение оплаты
         db.update_order_status(order_id, 'payment_rejected', 'rejected')
         
-        # Отправляем уведомление пользователю
+        # Уведомление клиента
         try:
             await context.bot.send_message(
                 chat_id=order['user_id'],
@@ -1281,13 +1340,17 @@ async def handle_admin_action(query, data, context):
             logger.error(f"Не удалось отправить уведомление пользователю: {e}")
         
         # Обновляем сообщение в группе
-        original_text = query.message.text_html if hasattr(query.message, 'text_html') else query.message.text
-        rejected_text = f"{original_text}\n\n❌ <b>ОПЛАТА ОТКЛОНЕНА АДМИНИСТРАТОРОМ</b>"
+        original_text = query.message.text
+        rejected_text = f"{original_text}\n\n❌ <b>ОПЛАТА ОТКЛОНЕНА АДМИНИСТРАТОРОМ</b>\n⏰ {datetime.now().strftime('%H:%M:%S %d.%m.%Y')}"
         
         await query.edit_message_text(
             rejected_text,
+            reply_markup=get_admin_order_keyboard(order_id, 'rejected'),
             parse_mode='HTML'
         )
+        
+        # Уведомление администратору в личный чат
+        await send_admin_notification(context, query.from_user.id, order_id, 'reject')
 
 # ==================== ЗАПУСК БОТА ====================
 def main():
@@ -1337,5 +1400,4 @@ def main():
             logger.info("🔓 Блокировка снята")
 
 if __name__ == "__main__":
-    # ЗАПУСК БОТА (убран вызов subprocess для совместимости)
     main()
