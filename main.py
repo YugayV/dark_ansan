@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 DARK KITCHEN ANSAN - Telegram Bot
-Версия 2.6 - Исправлены асинхронные вызовы
+Версия 2.7 - Исправлены проблемы запуска
 """
 
 import os
@@ -10,7 +10,6 @@ import re
 import time
 import sys
 import socket
-import asyncio
 from datetime import datetime
 from typing import Dict, List, Any
 
@@ -1403,7 +1402,6 @@ async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 👥 Group ID: <code>{GROUP_ID}</code>
 📊 Заказов в базе: {len(db.orders)}
 👤 Пользователей: {len(db.user_data)}
-🤖 Бот: @dark_kitchen_ansan_bot
 
 📅 Время: {datetime.now().strftime('%H:%M:%S %d.%m.%Y')}"""
     
@@ -1494,8 +1492,8 @@ async def test_notify_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
 # ==================== ЗАПУСК БОТА ====================
-async def main_async():
-    """Асинхронная основная функция запуска бота"""
+def main():
+    """Основная функция запуска бота"""
     # Проверка на один экземпляр
     lock_socket = check_single_instance()
     
@@ -1532,20 +1530,17 @@ async def main_async():
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     
     try:
-        # Проверяем доступность бота
-        bot = await application.bot.get_me()
-        logger.info(f"✅ Бот @{bot.username} доступен")
+        # Запускаем бота
+        logger.info("🔄 Запуск polling...")
         logger.info(f"🔧 Команды для отладки:")
         logger.info(f"   /debug - отладочная информация")
         logger.info(f"   /checkgroup - проверить группу")
         logger.info(f"   /testbuttons - тест кнопок")
         logger.info(f"   /test_notify - тест уведомлений")
         
-        # Запускаем бота
-        logger.info("🔄 Запуск polling...")
-        await application.run_polling(
+        application.run_polling(
             allowed_updates=Update.ALL_TYPES,
-            drop_pending_updates=True,  # Очищаем старые обновления
+            drop_pending_updates=True  # Очищаем старые обновления
         )
         
     except KeyboardInterrupt:
@@ -1558,10 +1553,6 @@ async def main_async():
         if lock_socket:
             lock_socket.close()
             logger.info("🔓 Блокировка снята")
-
-def main():
-    """Основная функция запуска бота"""
-    asyncio.run(main_async())
 
 if __name__ == "__main__":
     main()
